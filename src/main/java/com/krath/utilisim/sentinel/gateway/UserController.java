@@ -14,16 +14,11 @@ public class UserController {
         this.service = service;
     }
 
-    @PostMapping("/register")
-    public AppUser register(@RequestBody AppUser user){
-        return service.registerUser(user);
-    }
 
     //implement find by email
     @GetMapping("/search/by-email")
     public AppUser findUserByEmail(@RequestBody AppUser user){
         return service.findByEmail(user.getEmail());
     }
-
 
 }

@@ -4,6 +4,8 @@ import com.krath.utilisim.sentinel.foundation.AppUser;
 import com.krath.utilisim.sentinel.vault.UserRepository;
 import org.springframework.stereotype.Service;
 
+import java.util.Optional;
+
 @Service
 public class UserServiceImpl implements UserService {
 
@@ -19,12 +21,7 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
-    public AppUser findByEmail(String email) {
+    public Optional<AppUser> findByEmail(String email) {
         return repo.findByEmail(email);
-    }
-
-    @Override
-    public AppUser findByUsername(String username) {
-        return repo.findByUsername(username);
     }
 }
