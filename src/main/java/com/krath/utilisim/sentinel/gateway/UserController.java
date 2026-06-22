@@ -4,6 +4,8 @@ import com.krath.utilisim.sentinel.foundation.AppUser;
 import com.krath.utilisim.sentinel.smithy.user.UserService;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Optional;
+
 @RestController
 @RequestMapping("api/sentinel/users")
 public class UserController {
@@ -17,7 +19,7 @@ public class UserController {
 
     //implement find by email
     @GetMapping("/search/by-email")
-    public AppUser findUserByEmail(@RequestBody AppUser user){
+    public Optional<AppUser> findUserByEmail(@RequestBody AppUser user){
         return service.findByEmail(user.getEmail());
     }
 
