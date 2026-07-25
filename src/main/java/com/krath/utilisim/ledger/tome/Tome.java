@@ -2,9 +2,7 @@ package com.krath.utilisim.ledger.tome;
 
 import jakarta.annotation.Nullable;
 import jakarta.persistence.*;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import lombok.*;
 
 import java.time.OffsetDateTime;
 
@@ -13,6 +11,8 @@ import java.time.OffsetDateTime;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
+@Getter
+@Setter
 public class Tome {
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
