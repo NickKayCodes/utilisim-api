@@ -1,17 +1,17 @@
-package com.krath.utilisim.ledger.leaf.CreateTome;
+package com.krath.utilisim.ledger.leaf.create;
 
 import java.time.OffsetDateTime;
 
 public record TomeResponse(
         String id,
-        String userId, // fk to AppUser
-        String name, // Acc name
-        float currentBalance, //current balance
-        float apr, //interest rate that is user entered but can be nullable
-        float estimatedApr, //if apr is null, system will calculate an estimated apr (not accurate)
+        String userId,
+        String name,
+        float currentBalance,
+        Float apr,
+        float estimatedApr,
         float minimumDebtPayment,
         float creditLimit,
-        String type, // Line of credit type.
+        String type,
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt
 ) {}
