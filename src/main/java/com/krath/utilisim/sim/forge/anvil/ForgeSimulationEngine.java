@@ -9,11 +9,13 @@ import com.krath.utilisim.sim.forge.materials.SimulationStatus;
 import com.krath.utilisim.sim.oracle.OracleService;
 import com.krath.utilisim.sim.ratio.AmortizationEntry;
 import com.krath.utilisim.sim.ratio.calculate.RatioService;
+import org.springframework.stereotype.Service;
 
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 
+@Service
 public class ForgeSimulationEngine {
 
     private final RatioService ratioService;

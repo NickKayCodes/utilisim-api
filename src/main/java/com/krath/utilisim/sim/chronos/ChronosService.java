@@ -1,10 +1,12 @@
 package com.krath.utilisim.sim.chronos;
 
 import com.krath.utilisim.sim.ratio.AmortizationEntry;
+import org.springframework.stereotype.Service;
 
 import java.time.OffsetDateTime;
 import java.util.List;
 
+@Service
 public class ChronosService {
 
     public List<AmortizationEntry> applyTimeline(List<AmortizationEntry> schedule) {

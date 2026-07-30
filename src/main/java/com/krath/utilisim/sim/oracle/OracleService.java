@@ -5,9 +5,11 @@ import com.krath.utilisim.sim.chronos.projection.SavingsProjection;
 import com.krath.utilisim.sim.forge.hammer.SimulationInput;
 import com.krath.utilisim.sim.ratio.AmortizationEntry;
 import com.krath.utilisim.sim.ratio.calculate.RatioService;
+import org.springframework.stereotype.Service;
 
 import java.util.List;
 
+@Service
 public class OracleService {
 
     private final RatioService ratioService;
