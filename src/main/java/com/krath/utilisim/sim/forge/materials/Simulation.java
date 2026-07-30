@@ -7,7 +7,7 @@ import lombok.Setter;
 import java.time.OffsetDateTime;
 
 @Entity
-@Table(name = "simulation")
+@Table(name = "simulation_run")
 @Getter
 @Setter
 public class Simulation {
