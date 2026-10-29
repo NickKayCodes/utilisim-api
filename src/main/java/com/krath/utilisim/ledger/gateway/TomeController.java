@@ -5,7 +5,7 @@ import com.krath.utilisim.ledger.leaf.create.TomeResponse;
 import com.krath.utilisim.ledger.tome.Tome;
 import com.krath.utilisim.ledger.vault.TomeMapper;
 import com.krath.utilisim.ledger.vault.TomeService;
-import com.krath.utilisim.sentinel.warden.sec.auth.user.UserPrincipal;
+import com.krath.utilisim.sentinel.foundation.AppUser;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -21,7 +21,7 @@ public class TomeController {
 
     @PostMapping
     public ResponseEntity<TomeResponse> createTome(
-            @AuthenticationPrincipal UserPrincipal user,
+            @AuthenticationPrincipal AppUser user,
             @RequestBody TomeRequest request
     ) {
         Tome created = tomeService.createTome(request, user.getId());
@@ -30,7 +30,7 @@ public class TomeController {
 
     @GetMapping
     public ResponseEntity<List<TomeResponse>> getMyTomes(
-            @AuthenticationPrincipal UserPrincipal user
+            @AuthenticationPrincipal AppUser user
     ) {
         List<Tome> tomes = tomeService.getAllTomesByUserId(user.getId());
         return ResponseEntity.ok(TomeMapper.toResponseList(tomes));
@@ -38,7 +38,7 @@ public class TomeController {
 
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteTome(
-            @AuthenticationPrincipal UserPrincipal user,
+            @AuthenticationPrincipal AppUser user,
             @PathVariable String id
     ) {
         tomeService.deleteTomeById(id, user.getId());

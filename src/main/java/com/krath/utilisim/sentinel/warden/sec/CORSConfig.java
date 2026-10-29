@@ -13,7 +13,7 @@ public class CORSConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration corsConfiguration = new CorsConfiguration();
 
-        corsConfiguration.addAllowedOrigin("https://localhost:3000"); //react dev server
+        corsConfiguration.addAllowedOrigin("http://localhost:3000"); //react dev server
 
         corsConfiguration.addAllowedHeader("*");
         corsConfiguration.addAllowedMethod("*");

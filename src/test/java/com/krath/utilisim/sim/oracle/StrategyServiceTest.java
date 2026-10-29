@@ -45,8 +45,8 @@ class StrategyServiceTest {
         assertEquals("tome-4", ordered.get(1).tomeId());  // 1500
         assertEquals("tome-3", ordered.get(2).tomeId());  // 2000
         assertEquals("tome-2", ordered.get(3).tomeId());  // 5000
-        assertEquals("Snowball: Pay off smallest balance first...",
-            output.description().substring(0, 37));
+        assertEquals("Snowball: Pay off smallest balance first for psychological momentum",
+            output.description());
     }
 
     @Test
