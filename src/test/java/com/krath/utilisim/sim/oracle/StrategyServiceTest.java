@@ -203,6 +203,16 @@ class StrategyServiceTest {
     }
 
     @Test
+    @DisplayName("Minimum only: preserve the original order")
+    void testMinimumOnlyOrdering() {
+        StrategyInput input = new StrategyInput(StrategyType.MINIMUM_ONLY, null, 0f, 0f);
+        StrategyOutput output = strategyService.orderDebts(testDebts, input);
+
+        assertEquals(testDebts, output.orderedDebts());
+        assertEquals("Minimum only: No strategic ordering applied", output.description());
+    }
+
+    @Test
     @DisplayName("Hybrid band calculation with varying APRs")
     void testHybridBandLogic() {
         // Create debts with clear APR bands
