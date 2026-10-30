@@ -65,9 +65,11 @@ public class ApiExceptionHandler {
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, String>> handleUnexpected(Exception ex) {
         log.error("Unhandled exception", ex);
+        // The message is deliberately generic: exception text can contain class
+        // names, SQL fragments or property values. Details stay in the server log.
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
                 "error", "Internal Server Error",
-                "message", ex.getMessage() == null ? "Unexpected error" : ex.getMessage()
+                "message", "Unexpected error"
         ));
     }
 }

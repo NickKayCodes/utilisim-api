@@ -27,22 +27,36 @@ for live evidence.
 | ID | Severity | Area | Defect | Evidence |
 |---|---|---|---|---|
 | API-01 | High | Tome create | Blank or omitted `apr` returns `500` before the estimate path runs | Runtime |
-| API-02 | Critical | Auth | Malformed, expired, or wrongly signed tokens return `500` with a stack trace | Runtime |
+| API-02 | Critical | Auth | Malformed, expired, or wrongly signed tokens return `500` with a stack trace **(fixed)** | Runtime |
 | API-03 | Medium | Error handling | Wrong HTTP method or media type returns `500` instead of `405`/`415` | Runtime |
 | API-04 | High | Simulation | Schedule stops at `termMonths * 2`; result still says `COMPLETED` with a balance owed | Runtime |
 | API-05 | High | Strategy math | `calculate-total-interest` multiplies balance by a percentage APR, producing 100× values | Runtime |
 | API-06 | High | Recommendation | Threshold compares percentage APR against `0.15`, so 0.2% is treated as high interest | Runtime |
 | API-07 | Medium | Tome estimate | `calculateEstimatedApr` returns `0.16` and is unreachable; the unit is wrong | Source |
-| API-08 | Critical | Scenarios | Every authenticated user can read/delete every scenario; `userId` is client-controlled | Runtime |
-| API-09 | Critical | User search | `GET .../users/search/by-email` is unreachable and is designed to return the `AppUser` entity, including the password hash | Runtime + Source |
+| API-08 | Critical | Scenarios | Every authenticated user can read/delete every scenario; `userId` is client-controlled **(fixed)** | Runtime |
+| API-09 | Critical | User search | `GET .../users/search/by-email` is unreachable and is designed to return the `AppUser` entity, including the password hash **(fixed)** | Runtime + Source |
 | API-10 | Medium | Tome delete | Deleting a missing or foreign tome returns `500` instead of `404`/`403` | Runtime |
 | API-11 | Medium | Identity | `AppUser.getUsername()` returns the email, so `username` is never echoed or usable | Runtime |
 | API-12 | Medium | Scenario create | Explicit `null` for primitive fields returns a generic `400` | Runtime |
-| API-13 | Medium | Auth | The JWT signing key is generated per boot, so every restart invalidates all tokens | Source |
+| API-13 | Medium | Auth | The JWT signing key is generated per boot, so every restart invalidates all tokens **(fixed)** | Source |
 | API-14 | Medium | Simulation | Result `userId` and `simulationInputId` echo untrusted request values | Runtime |
 | API-15 | Medium | Persistence | A run has an `id` but is never stored and cannot be retrieved | Source |
 | API-16 | Low | Auth | Any login failure, including infrastructure errors, is reported as `401` | Source |
 | API-17 | Low | Analysis | `analyze` ignores its `input`, and ties are resolved by strategy order | Runtime + Source |
+
+## Remediation status
+
+**2026-10-29 — P0 security bucket.**
+
+| Defect | Status | Change |
+|---|---|---|
+| API-09 | Fixed | The email-search endpoint was deleted. `GET /api/sentinel/users/me` returns a `UserResponse` (`id`, `username`, `email`), and `AppUser.password` is `@JsonIgnore`d as defence in depth. |
+| API-08 | Fixed | The owner is derived from `@AuthenticationPrincipal`; every scenario query is owner-scoped; a foreign id returns `404`, never `403`. |
+| API-02 | Fixed | `JwtAuthenticationFilter` treats any token failure as anonymous, so the entry point answers `401`. `server.error.include-stacktrace/message=never`; the catch-all handler no longer echoes exception text. |
+| API-13 | Fixed (configuration) | `JwtService` loads `JWT_SECRET` (or `utilisim.security.jwt.secret`). Unset → ephemeral key plus a warning; shorter than 32 bytes → startup failure. |
+
+API-01, API-04, API-05, API-06, API-10, API-17 and the general validation gap remain open; they are
+scheduled for the P1/P2 buckets.
 
 ---
 

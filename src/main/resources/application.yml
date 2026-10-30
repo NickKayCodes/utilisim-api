@@ -1,0 +1,12 @@
+# Tracked configuration defaults.
+#
+# Local credentials live in application.properties, which is git-ignored. Spring Boot
+# loads both files and lets application.properties win per key, so anything that must
+# ship (and must not be lost when the local file is recreated) belongs here.
+
+server:
+  error:
+    # Never expose stack traces or exception messages in HTTP error bodies.
+    # DevTools otherwise forces include-stacktrace=always.
+    include-stacktrace: never
+    include-message: never

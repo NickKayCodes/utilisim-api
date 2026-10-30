@@ -74,17 +74,18 @@ class ApiExceptionHandlerTest {
     }
 
     @Test
-    @DisplayName("unexpected exceptions become 500 responses")
+    @DisplayName("unexpected exceptions become 500 responses without leaking details")
     void handlesUnexpectedException() {
-        var response = handler.handleUnexpected(new RuntimeException("boom"));
+        var response = handler.handleUnexpected(new RuntimeException("boom: internal class com.krath.Secret"));
 
         assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode());
         assertEquals("Internal Server Error", response.getBody().get("error"));
-        assertEquals("boom", response.getBody().get("message"));
+        assertEquals("Unexpected error", response.getBody().get("message"));
+        assertFalse(response.getBody().get("message").contains("boom"));
     }
 
     @Test
-    @DisplayName("unexpected exceptions without a message use a fallback")
+    @DisplayName("unexpected exceptions without a message use the same generic text")
     void handlesUnexpectedExceptionWithoutMessage() {
         var response = handler.handleUnexpected(new RuntimeException());
 

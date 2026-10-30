@@ -1,0 +1,79 @@
+-- 2026-10-29 — Scenario ownership: data remediation record
+--
+-- Context: before the P0-2 fix, ScenarioController never set an owner. The UI's
+-- ScenarioInput has no userId field, so *every* scenario created through the app was
+-- stored with user_id = NULL. After the fix those rows are invisible to all accounts.
+--
+-- Decision taken (user-approved): there is no audit log and no owner recorded, so the
+-- unattributable rows were deleted and fresh rows were seeded with a known owner.
+-- This project has no migration tool (ddl-auto=update); these are manual statements.
+--
+-- ============================================================================
+-- EXECUTED 2026-10-29 (production-equivalent local database)
+-- ============================================================================
+--
+-- 1. PREVIEW — found exactly one row, owner NULL, name "test", AVALANCHE, 0/0.
+--    SELECT id, COALESCE(user_id,'<NULL>') AS owner, name, strategy,
+--           extra_payment, lump_sum_payment, created_at
+--    FROM scenario_context ORDER BY created_at;
+--
+-- 2. DELETE — the single unattributable row.
+--    BEGIN;
+--    DELETE FROM scenario_context WHERE user_id IS NULL;
+--    COMMIT;
+--    -- result: DELETE 1; scenario_context empty; 0 orphans
+--
+-- 3. SEED — two presets for every existing account, owner guaranteed non-NULL.
+--    BEGIN;
+--    INSERT INTO scenario_context
+--      (id, user_id, name, strategy, extra_payment, lump_sum_payment, created_at, updated_at)
+--    SELECT gen_random_uuid()::text, u.id, p.name, p.strategy,
+--           p.extra_payment, p.lump_sum_payment, now(), now()
+--    FROM utilisim_user u
+--    CROSS JOIN (VALUES
+--      ('Snowball baseline'::varchar, 'SNOWBALL'::varchar, 75::real,   0::real),
+--      ('Avalanche push'::varchar,    'AVALANCHE'::varchar, 150::real, 500::real)
+--    ) AS p(name, strategy, extra_payment, lump_sum_payment);
+--    COMMIT;
+--    -- result: INSERT 0 12
+--
+-- 4. VERIFY — 12 rows, 0 NULL owners, 0 dangling owners, 12 distinct ids.
+--    SELECT count(*) AS total,
+--           count(*) FILTER (WHERE user_id IS NULL) AS null_owner,
+--           count(*) FILTER (
+--             WHERE user_id IS NOT NULL
+--               AND NOT EXISTS (SELECT 1 FROM utilisim_user u
+--                               WHERE u.id = scenario_context.user_id)
+--           ) AS dangling_owner,
+--           count(DISTINCT id) AS distinct_ids
+--    FROM scenario_context;
+--
+-- ============================================================================
+-- OPTION NOT USED — backfill instead of delete
+-- ============================================================================
+--
+-- Kept for the case where the rows are known to belong to one account. Do not run this
+-- after a delete has already happened; there is nothing left to update.
+--
+-- 1. PREVIEW — how much is orphaned?
+--    SELECT count(*) AS orphaned_rows FROM scenario_context WHERE user_id IS NULL;
+--
+-- 2. PREVIEW — rows pointing at a user id that does not exist (spoofed / deleted).
+--    SELECT s.user_id, count(*) AS rows
+--    FROM scenario_context s
+--    LEFT JOIN utilisim_user u ON u.id = s.user_id
+--    WHERE s.user_id IS NOT NULL AND u.id IS NULL
+--    GROUP BY s.user_id;
+--
+-- 3. BACKFILL — assign the orphan rows to one explicit owner (needs review).
+--    UPDATE scenario_context SET user_id = :owner_id WHERE user_id IS NULL;
+--
+-- 4. ROLLBACK — only possible if you recorded the affected ids first.
+--    There is no automatic undo for the UPDATE above.
+--
+-- ============================================================================
+-- WARNING
+-- ============================================================================
+--
+-- Never assign orphan rows to "the user who logs in" or "the first account". With more
+-- than one account that silently re-creates the cross-user exposure this fix removed.

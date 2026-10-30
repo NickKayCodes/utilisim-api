@@ -131,4 +131,85 @@ class JwtAuthenticationFilterTest {
         assertSame(existing, SecurityContextHolder.getContext().getAuthentication());
         verifyNoInteractions(userDetailsService);
     }
+
+    @Test
+    @DisplayName("a malformed token is treated as anonymous and never throws")
+    void treatsMalformedTokenAsAnonymous() throws ServletException, IOException {
+        when(jwtService.extractEmail("token")).thenThrow(new io.jsonwebtoken.MalformedJwtException("bad"));
+
+        FilterChain chain = mock(FilterChain.class);
+        filter.doFilter(request("Bearer token"), new MockHttpServletResponse(), chain);
+
+        assertNull(SecurityContextHolder.getContext().getAuthentication());
+        verify(chain).doFilter(any(), any());
+        verifyNoInteractions(userDetailsService);
+    }
+
+    @Test
+    @DisplayName("an expired token is treated as anonymous and never throws")
+    void treatsExpiredTokenAsAnonymous() throws ServletException, IOException {
+        when(jwtService.extractEmail("token"))
+                .thenThrow(new io.jsonwebtoken.ExpiredJwtException(null, null, "expired"));
+
+        FilterChain chain = mock(FilterChain.class);
+        filter.doFilter(request("Bearer token"), new MockHttpServletResponse(), chain);
+
+        assertNull(SecurityContextHolder.getContext().getAuthentication());
+        verify(chain).doFilter(any(), any());
+    }
+
+    @Test
+    @DisplayName("a wrongly signed token is treated as anonymous and never throws")
+    void treatsWronglySignedTokenAsAnonymous() throws ServletException, IOException {
+        when(jwtService.extractEmail("token"))
+                .thenThrow(new io.jsonwebtoken.security.SignatureException("wrong key"));
+
+        FilterChain chain = mock(FilterChain.class);
+        filter.doFilter(request("Bearer token"), new MockHttpServletResponse(), chain);
+
+        assertNull(SecurityContextHolder.getContext().getAuthentication());
+        verify(chain).doFilter(any(), any());
+    }
+
+    @Test
+    @DisplayName("an unusable bearer value is treated as anonymous and never throws")
+    void treatsIllegalArgumentAsAnonymous() throws ServletException, IOException {
+        when(jwtService.extractEmail("token")).thenThrow(new IllegalArgumentException("empty"));
+
+        FilterChain chain = mock(FilterChain.class);
+        filter.doFilter(request("Bearer token"), new MockHttpServletResponse(), chain);
+
+        assertNull(SecurityContextHolder.getContext().getAuthentication());
+        verify(chain).doFilter(any(), any());
+    }
+
+    @Test
+    @DisplayName("a token for a deleted user is treated as anonymous")
+    void treatsUnknownUserAsAnonymous() throws ServletException, IOException {
+        when(jwtService.extractEmail("token")).thenReturn("gone@example.com");
+        when(userDetailsService.loadUserByUsername("gone@example.com"))
+                .thenThrow(new org.springframework.security.core.userdetails.UsernameNotFoundException("gone"));
+
+        FilterChain chain = mock(FilterChain.class);
+        filter.doFilter(request("Bearer token"), new MockHttpServletResponse(), chain);
+
+        assertNull(SecurityContextHolder.getContext().getAuthentication());
+        verify(chain).doFilter(any(), any());
+    }
+
+    @Test
+    @DisplayName("a token that fails revalidation is treated as anonymous")
+    void treatsRevalidationFailureAsAnonymous() throws ServletException, IOException {
+        UserDetails user = User.withUsername("ada@example.com").password("x").build();
+        when(jwtService.extractEmail("token")).thenReturn("ada@example.com");
+        when(userDetailsService.loadUserByUsername("ada@example.com")).thenReturn(user);
+        when(jwtService.isTokenValid("token", user))
+                .thenThrow(new io.jsonwebtoken.ExpiredJwtException(null, null, "expired"));
+
+        FilterChain chain = mock(FilterChain.class);
+        filter.doFilter(request("Bearer token"), new MockHttpServletResponse(), chain);
+
+        assertNull(SecurityContextHolder.getContext().getAuthentication());
+        verify(chain).doFilter(any(), any());
+    }
 }

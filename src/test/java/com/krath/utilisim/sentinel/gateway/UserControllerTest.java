@@ -1,35 +1,63 @@
 package com.krath.utilisim.sentinel.gateway;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.krath.utilisim.sentinel.foundation.AppUser;
-import com.krath.utilisim.sentinel.smithy.user.UserService;
+import com.krath.utilisim.sentinel.foundation.scrolls.user.UserResponse;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-
-import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.when;
 
-@ExtendWith(MockitoExtension.class)
+/**
+ * Regression tests for the password-hash disclosure (SECURITY_REVIEW NEW-01).
+ */
 class UserControllerTest {
 
-    @Mock
-    private UserService userService;
+    private final UserController controller = new UserController();
+    private final ObjectMapper mapper = new ObjectMapper();
 
-    @InjectMocks
-    private UserController controller;
+    private AppUser user() {
+        return AppUser.builder()
+                .id("u1")
+                .username("Ada")
+                .email("ada@example.com")
+                .password("$2a$10$hash-must-never-leave-the-server")
+                .build();
+    }
 
     @Test
-    @DisplayName("findUserByEmail looks up the supplied email")
-    void findsByEmail() {
-        AppUser user = AppUser.builder().id("u1").email("ada@example.com").build();
-        AppUser request = AppUser.builder().email("ada@example.com").build();
-        when(userService.findByEmail("ada@example.com")).thenReturn(Optional.of(user));
+    @DisplayName("GET /me returns the signed-in account as a DTO")
+    void returnsCurrentUser() {
+        UserResponse response = controller.me(user());
 
-        assertEquals(Optional.of(user), controller.findUserByEmail(request));
+        assertEquals("u1", response.id());
+        assertEquals("ada@example.com", response.email());
+        // AppUser.getUsername() is the security identifier, i.e. the email.
+        assertEquals("ada@example.com", response.username());
+    }
+
+    @Test
+    @DisplayName("the user response never contains a password property")
+    void responseHasNoPassword() throws Exception {
+        String json = mapper.writeValueAsString(controller.me(user()));
+
+        assertFalse(json.contains("password"), json);
+        assertFalse(json.contains("$2a$10$"), json);
+    }
+
+    @Test
+    @DisplayName("an AppUser entity never serializes its password hash")
+    void entityHidesPassword() throws Exception {
+        String json = mapper.writeValueAsString(user());
+
+        assertFalse(json.contains("password"), json);
+        assertFalse(json.contains("$2a$10$"), json);
+        assertTrue(json.contains("ada@example.com"));
+    }
+
+    @Test
+    @DisplayName("projection rejects a null entity")
+    void rejectsNullUser() {
+        assertThrows(NullPointerException.class, () -> UserResponse.from(null));
     }
 }

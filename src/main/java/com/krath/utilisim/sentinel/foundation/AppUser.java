@@ -1,5 +1,6 @@
 package com.krath.utilisim.sentinel.foundation;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -23,6 +24,8 @@ public class AppUser implements UserDetails {
     private String id;
 
     private String username;
+    /** BCrypt hash. Never serialized: entities must not leave the trust boundary. */
+    @JsonIgnore
     private String password;
     private String email;
 

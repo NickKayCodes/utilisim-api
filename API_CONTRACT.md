@@ -64,16 +64,15 @@ role-restricted.
 ### Token lifecycle
 
 - There is no refresh flow and no server-side session.
-- Logout is a client-side token discard.
-- `JwtService` generates a random signing key at startup. Restarting the API invalidates every
-  existing token.
-- **Invalid tokens are not rejected cleanly.** `JwtAuthenticationFilter` calls
-  `JwtService.extractEmail` without a `try`/`catch`, so a malformed, expired, or wrong-signature
-  token throws out of the filter. The request returns **`500`** with Spring Boot's default error
-  body (including a `trace` stack trace) instead of `401`. Only a *missing* token reaches the
-  `401` entry point. See §3 and §8.
-- A production implementation must move the key to `<JWT_SECRET>`, rotate it deliberately, and
-  translate token exceptions into `401`.
+- Logout is a client-side token discard: the client removes `utilisim.token` and `utilisim.user`.
+  Because an invalid token now returns `401`, a discarded or expired token cannot wedge a client —
+  the next request clears the session and routes back to login.
+- `JwtService` reads its HS256 key from `JWT_SECRET` (or `utilisim.security.jwt.secret`). When a
+  secret is configured, tokens survive a restart. When it is absent, an ephemeral key is generated
+  and a warning is logged; a configured secret shorter than 32 bytes fails application startup.
+- Any token problem — malformed, expired, wrongly signed, unknown subject — is treated as "no
+  credentials". `JwtAuthenticationFilter` catches it and continues unauthenticated, so Spring
+  Security's entry point answers **`401`**. The filter never throws and no stack trace is returned.
 
 ---
 
@@ -90,8 +89,8 @@ Handled errors return a JSON object with exactly `error` and `message`:
 | 400 | `Bad Request` | Duplicate email, invalid input, malformed JSON |
 | 401 | `Unauthorized` | Missing token, or wrong login credentials |
 | 403 | `Forbidden` | Authenticated but denied (rare; no role rules exist) |
-| 404 | `Not Found` | Unknown route with a valid token, or a missing scenario |
-| 500 | `Internal Server Error` | Unhandled exception, including every invalid bearer token |
+| 404 | `Not Found` | Unknown route with a valid token, or a missing/foreign scenario |
+| 500 | `Internal Server Error` | Unhandled exception; the body never contains a stack trace or exception text |
 
 ### Dispatcher behaviour
 
@@ -101,17 +100,19 @@ Spring Security rewrites failures to an empty `403` and clients lose the error b
 ### Exceptions that bypass `ApiExceptionHandler`
 
 `ApiExceptionHandler` covers exceptions thrown by controllers and services. Exceptions thrown
-inside the security filter chain never reach it. Today that means:
+inside the security filter chain never reach it. Current behaviour:
 
-- A malformed, expired, or wrongly signed bearer token returns **`500`** with Spring Boot's
-  default body: `timestamp`, `status`, `error`, and a full `trace`. It is not the
-  `{error, message}` shape and it leaks a stack trace.
-- A missing token returns `401` `{"error":"Unauthorized","message":"Authentication required"}`.
-- An unknown route without a token returns the same `401`; with a valid token it returns `404`
+- A malformed, expired, or wrongly signed bearer token is caught by `JwtAuthenticationFilter` and
+  the request continues unauthenticated, so it returns `401`
+  `{"error":"Unauthorized","message":"Authentication required"}`.
+- A missing token returns the same `401`.
+- An unknown route without a token returns `401`; with a valid token it returns `404`
   `{"error":"Not Found","message":"No endpoint matches ..."}`.
+- Any `500` is generic: `{"error":"Internal Server Error","message":"Unexpected error"}`.
+  `server.error.include-stacktrace=never` and `server.error.include-message=never` also cover the
+  container's default error page.
 
-Clients must treat a `500` as a possible authentication failure. The UI only clears its session
-on `401`, so a stale token can leave the client signed in while every request fails.
+Clients should treat `401` as "session invalid" and clear the stored token.
 
 ### Inconsistent 404/500 behaviour
 
@@ -230,19 +231,20 @@ Public.
 
 ### 5.2 Scenarios (archive)
 
-Backed by `scenario_context`. Scenarios are **not user-scoped**: the server never sets `userId`
-from the token, and `GET` returns every row. A client can still send `userId` and it will be
-stored verbatim, but it has no effect on visibility.
+Backed by `scenario_context` and **scoped to the authenticated user**. The owner is always derived
+from the bearer token; a `userId` in the request body is ignored. A row owned by another user is
+indistinguishable from a missing row, so every by-id operation returns `404` rather than `403`
+(ids cannot be probed for existence).
 
 #### `GET /api/archive/scenarios`
 
-**200**
+Returns only the caller's scenarios. **200**
 
 ```json
 [
   {
     "id": "<SCENARIO_ID>",
-    "userId": null,
+    "userId": "<USER_ID>",
     "name": "Example scenario",
     "strategy": "SNOWBALL",
     "extraPayment": 25.0,
@@ -253,7 +255,7 @@ stored verbatim, but it has no effect on visibility.
 ]
 ```
 
-Returns `[]` when empty.
+Returns `[]` when the caller has none.
 
 #### `POST /api/archive/scenarios`
 
@@ -263,31 +265,32 @@ Returns `[]` when empty.
 
 **200** — the created row, same shape as the list element.
 
-- `id`, `createdAt`, and `updatedAt` are server-controlled. Omit `id`; sending an existing id
-  performs an upsert and should be avoided. `userId` is **not** set by the server: send it and it
-  is stored as-is, omit it and it stays `null`. Neither affects visibility.
+- `id`, `userId`, `createdAt`, and `updatedAt` are server-controlled. A client-supplied `id` is
+  cleared, so a POST can never overwrite an existing scenario; a client-supplied `userId` is
+  overwritten with the token's owner.
 - `extraPayment` and `lumpSumPayment` are primitives. Omitting them stores `0`; an explicit
   `null` is rejected with **400** and the generic `{"message":"Malformed JSON request body"}`
   body, because the codebase does not enable null-to-primitive coercion. Send `0` instead.
 
 #### `GET /api/archive/scenarios/{id}`
 
-**200** with the scenario, or **404 with an empty body**.
+**200** with the scenario, or **404 with an empty body** when it does not exist *or belongs to
+another user*.
 
 #### `PUT /api/archive/scenarios/{id}`
 
 The server copies `name`, `strategy`, `extraPayment`, and `lumpSumPayment`, then refreshes
-`updatedAt`. Other body fields are ignored.
+`updatedAt`. Ownership and `createdAt` never change. Other body fields are ignored.
 
 ```json
 { "name": "Renamed scenario", "strategy": "AVALANCHE", "extraPayment": 50, "lumpSumPayment": 0 }
 ```
 
-**200** with the updated row, or **404 with an empty body**.
+**200** with the updated row, or **404 with an empty body** when it is missing or foreign.
 
 #### `DELETE /api/archive/scenarios/{id}`
 
-**204** with no body, or **404 with an empty body**.
+**204** with no body, or **404 with an empty body** when it is missing or foreign.
 
 ---
 
@@ -644,22 +647,22 @@ current run endpoint.
 | # | Issue | Impact | Phase-2 direction |
 |---|---|---|---|
 | 1 | Simulation results are not persisted | No run history; no result lookup | Persist runs and add a run-detail endpoint |
-| 2 | Scenarios are global | Users see each other's scenarios | Set `userId` from the principal and filter every scenario operation |
+| 2 | ~~Scenarios are global~~ **(fixed)** | Owner now comes from the principal; every query is owner-scoped | — |
 | 3 | No account update endpoint | Users delete and re-create accounts | Add `PUT /api/tomes/{id}` |
 | 4 | Tome delete returns 500 for missing/foreign ids | Incorrect status codes | Replace `RuntimeException` with typed 404/403 exceptions |
 | 5 | Analysis is not strategy-sensitive | Identical projections across strategies | Simulate each ordering against a real multi-debt schedule |
 | 6 | No roles or permissions | Any authenticated user can do everything | Add roles, authorities, and URL/method rules |
-| 7 | Random JWT key per startup | Tokens die on every restart | Load `<JWT_SECRET>` from environment/config |
+| 7 | ~~Random JWT key per startup~~ **(fixed)** | Key loads from `JWT_SECRET`; an unset value logs a warning and uses an ephemeral key | Set `JWT_SECRET` in every deployed environment |
 | 8 | `ddl-auto=update`, no migrations | Schema drift and unsafe deploys | Add Flyway or Liquibase; use `validate` |
 | 9 | No bean validation on DTOs | Bad payloads reach services; primitives default to 0 | Add `@Valid` and constraint annotations; map validation errors |
 | 10 | No pagination/filtering | Unbounded list endpoints | Add paged endpoints for tomes and scenarios |
 | 11 | No OpenAPI definition | Contract maintenance is manual | Add `springdoc-openapi` while keeping behavioural notes here |
 | 12 | `float` money and mixed rate units | Rounding and unit bugs | Use `BigDecimal`/`NUMERIC` and one documented unit per boundary |
 | 13 | `StrategyConfig` and `StrategyEngineIntegration` are unwired | Dead code obscures the real flow | Expose configuration endpoints or remove the unused layer |
-| 14 | `GET /api/sentinel/users/search/by-email` is unsafe | Requires a GET body and returns a password hash | Remove it or replace it with a safe, DTO-based lookup |
+| 14 | ~~`GET /api/sentinel/users/search/by-email` is unsafe~~ **(fixed)** | Endpoint removed; `GET /api/sentinel/users/me` returns an id/username/email DTO and `AppUser.password` is `@JsonIgnore`d | — |
 | 15 | Broad `Exception` handler returns 500 for control-flow errors | Wrong statuses and noisy logs | Introduce domain exceptions and specific handlers |
 | 16 | Blank/omitted `apr` on `POST /api/tomes` → `500` NPE | The UI offers a blank APR and the contract advertises an estimate that never runs | Make `Tome.apr` nullable or validate the request; wire the estimate correctly |
-| 17 | Invalid/expired bearer token → `500` with a stack trace | Leaks internals; clients cannot detect an expired session; a stale token sticks | Catch `JwtException` in the filter and return `401`; disable `trace` in error responses |
+| 17 | ~~Invalid/expired bearer token → `500` with a stack trace~~ **(fixed)** | Filter treats any token failure as anonymous → `401`; stack traces and exception text are suppressed | — |
 | 18 | Simulation stops at `termMonths * 2` with a balance still owed | A "completed" result can be an unpaid schedule | Loop until payoff or return an explicit unpaid/insufficient-payment status |
 | 19 | `SimulationResult.userId` and `simulationInputId` echo client input | Untrusted ids look like server-derived identity | Derive identity from the principal and stop echoing request ids |
 | 20 | `calculateEstimatedApr` returns `0.16`, not `16` | A future null-APR fix would store a near-zero rate | Remove the estimate or return a percentage and test it |
@@ -669,10 +672,11 @@ current run endpoint.
 
 ## 9. Phase-2 roadmap
 
-1. Fix status-code correctness: tome deletion, scenario misses, and invalid-token `500`s.
+1. ~~Fix status-code correctness: tome deletion, scenario misses, and invalid-token `500`s.~~
+   Scenario misses and invalid-token `500`s are fixed; tome deletion is still open (§8 #4).
 2. Fix the blank-APR `500` and either implement or remove `estimatedApr`.
-3. Remove or secure the user-search endpoint.
-4. Make scenarios user-scoped and add account updates.
+3. ~~Remove or secure the user-search endpoint.~~ Done: replaced by `GET /me`.
+4. ~~Make scenarios user-scoped~~ Done; account updates are still open.
 5. Persist simulation runs and expose history/detail endpoints.
 6. Make projections strategy-sensitive before presenting savings, and stop hiding the term cap.
 7. Move secrets and datasource settings to environment variables.
@@ -716,11 +720,10 @@ invites clients to build against them.
 | POST | `/api/oracle/strategy/analyze` | yes | `StrategyAnalysisRequest` | 200 `StrategyAnalysis` |
 | POST | `/api/oracle/strategy/calculate-total-interest` | yes | `DebtSnapshot[]` | 200 number |
 | GET | `/api/oracle/strategy/is-deterministic/{strategyType}` | yes | — | 200 boolean |
-| GET | `/api/sentinel/users/search/by-email` | yes | `AppUser` (GET body) | 200 `AppUser?` |
+| GET | `/api/sentinel/users/me` | yes | — | 200 `UserResponse` |
 
-**Unsafe endpoint:** `GET /api/sentinel/users/search/by-email` is a legacy controller that reads a
-request body on a GET, returns the `AppUser` entity (including the BCrypt password hash), and is
-not used by the UI. Do not build on it; it is scheduled for removal (§8 #14).
+`UserResponse` is `{id, username, email}`. No endpoint returns an `AppUser` or a password hash;
+`AppUser.password` is annotated `@JsonIgnore` as a second line of defence.
 
 Enums:
 
