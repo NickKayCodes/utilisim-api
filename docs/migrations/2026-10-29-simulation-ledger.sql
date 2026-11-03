@@ -1,9 +1,7 @@
 -- 2026-10-29 — Simulation ledger (CURRENT_PLAN_DESIGN §6)
 --
--- Status: prepared for the PostgreSQL database. Flyway is NOT enabled yet in this
--- project; `ddl-auto=update` still creates the entities. This script is the reviewed
--- DDL to apply (and the basis for the Flyway baseline that follows).
---
+-- SUPERSEDED 2026-11-02: Flyway V1 (baseline) and V2 (reconcile) now own this
+-- schema. Do not run this script manually. It is retained as the reviewed DDL.
 -- Run once, inside a transaction, after taking a backup:
 --   psql -v ON_ERROR_STOP=1 -f 2026-10-29-simulation-ledger.sql
 --

@@ -10,3 +10,15 @@ server:
     # DevTools otherwise forces include-stacktrace=always.
     include-stacktrace: never
     include-message: never
+
+spring:
+  flyway:
+    enabled: true
+    # Existing databases are baselined at V1; an empty database runs V1 then V2.
+    baseline-on-migrate: true
+    baseline-version: 1
+    locations: classpath:db/migration
+  jpa:
+    hibernate:
+      # The schema is owned by Flyway; Hibernate only validates it.
+      ddl-auto: validate
