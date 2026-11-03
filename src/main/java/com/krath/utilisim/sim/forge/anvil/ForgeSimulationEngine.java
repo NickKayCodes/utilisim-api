@@ -18,6 +18,9 @@ import java.util.UUID;
 @Service
 public class ForgeSimulationEngine {
 
+    /** A balance at or below this counts as paid off (sub-cent rounding noise). */
+    static final float REPAID_EPSILON = 0.005f;
+
     private final RatioService ratioService;
     private final ChronosService chronosService;
     private final OracleService oracleService;
@@ -51,7 +54,10 @@ public class ForgeSimulationEngine {
         OffsetDateTime payoffDate =
                 chronosService.getPayoffDate(timeline);
 
-        int monthsToPayoff = timeline.size();
+        int monthsSimulated = timeline.size();
+
+        float remaining = remainingBalance(timeline, input, scenario);
+        boolean repaid = remaining <= REPAID_EPSILON;
 
         // 3. Delegate projections to Oracle
         SavingsProjection projection =
@@ -61,14 +67,43 @@ public class ForgeSimulationEngine {
         result.setSchedule(timeline);
         result.setTotalInterestPaid(totalInterest);
         result.setTotalPrincipalPaid(totalPrincipal);
-        result.setMonthsToPayoff(monthsToPayoff);
-        result.setPayoffDate(payoffDate);
-        result.setSavingsComparedToBaseline(projection.getSavings());
+        result.setSavingsComparedToBaseline(repaid ? projection.getSavings() : 0f);
 
-        result.setStatus(SimulationStatus.COMPLETED);
+        if (repaid) {
+            result.setStatus(SimulationStatus.COMPLETED);
+            result.setMonthsToPayoff(monthsSimulated);
+            result.setPayoffDate(payoffDate);
+            result.setRemainingBalance(0f);
+        } else {
+            // The plan ran out of term with money still owed, or the payment
+            // never touched principal. Reporting COMPLETED here was the defect
+            // (DEFECTS API-04).
+            result.setStatus(SimulationStatus.FAILED);
+            result.setMonthsToPayoff(0);
+            result.setPayoffDate(null);
+            result.setRemainingBalance(remaining);
+        }
+
         result.setCompletedAt(OffsetDateTime.now());
 
         return result;
     }
-}
 
+    /**
+     * Balance still owed at the end of the run.
+     *
+     * <p>An empty schedule is ambiguous: it means either "nothing was owed"
+     * (zero principal, or a lump sum cleared it) or "no payment ever reduced the
+     * principal". Both cases must not be reported as a completed payoff.</p>
+     */
+    private static float remainingBalance(
+            List<AmortizationEntry> timeline,
+            SimulationInput input,
+            ScenarioContext scenario) {
+        if (!timeline.isEmpty()) {
+            return timeline.get(timeline.size() - 1).getRemainingBalance();
+        }
+        float lumpSum = Math.max(0f, scenario.getLumpSumPayment());
+        return Math.max(0f, input.getPrincipal() - lumpSum);
+    }
+}

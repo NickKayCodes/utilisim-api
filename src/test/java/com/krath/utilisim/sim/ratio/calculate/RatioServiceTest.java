@@ -91,24 +91,45 @@ class RatioServiceTest {
     }
 
     @Test
-    @DisplayName("the term cap stops an otherwise unpayable balance")
-    void stopsAtDoubleTheTerm() {
+    @DisplayName("the term is a planning horizon: the schedule stops there")
+    void stopsAtThePlanningHorizon() {
         List<AmortizationEntry> schedule = service.generateSchedule(
                 input(1000f, 0f, 10, 1f), scenario(0f, 0f));
 
-        assertEquals(20, schedule.size());
-        assertEquals(980f, schedule.get(schedule.size() - 1).getRemainingBalance(), 0.001f);
+        assertEquals(10, schedule.size());
+        assertEquals(990f, schedule.get(schedule.size() - 1).getRemainingBalance(), 0.001f);
     }
 
     @Test
-    @DisplayName("a payment below the monthly interest only pays interest")
+    @DisplayName("a long enough term clears the same balance")
+    void clearsWithinTheHorizon() {
+        List<AmortizationEntry> schedule = service.generateSchedule(
+                input(400f, 0f, 10, 1f), scenario(0f, 0f));
+        List<AmortizationEntry> longTerm = service.generateSchedule(
+                input(400f, 0f, 2000, 1f), scenario(0f, 0f));
+
+        assertEquals(400, longTerm.size());
+        assertEquals(0f, longTerm.get(longTerm.size() - 1).getRemainingBalance(), 0.001f);
+        assertTrue(schedule.size() < longTerm.size());
+    }
+
+    @Test
+    @DisplayName("an unbounded term cannot allocate an unbounded schedule")
+    void clampsTheHorizon() {
+        List<AmortizationEntry> schedule = service.generateSchedule(
+                input(100000f, 0f, Integer.MAX_VALUE, 1f), scenario(0f, 0f));
+
+        assertEquals(600, schedule.size());
+    }
+
+    @Test
+    @DisplayName("a payment below the monthly interest emits no rows and keeps the balance")
     void paymentBelowInterestDoesNotReducePrincipal() {
         List<AmortizationEntry> schedule = service.generateSchedule(
                 input(1000f, 0.12f, 12, 5f), scenario(0f, 0f));
 
-        assertEquals(24, schedule.size());
-        assertEquals(10f, schedule.get(0).getInterestPaid(), 0.001f);
-        assertEquals(0f, schedule.get(0).getPrincipalPaid(), 0.001f);
-        assertEquals(1000f, schedule.get(0).getRemainingBalance(), 0.001f);
+        // Interest is 10/month; 5 never touches principal, so there is no
+        // meaningful schedule. The engine reports the remaining balance.
+        assertTrue(schedule.isEmpty());
     }
 }

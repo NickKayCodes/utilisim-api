@@ -1,5 +1,7 @@
 package com.krath.utilisim.sim.oracle;
 
+import com.krath.utilisim.sim.forge.anvil.DebtInput;
+import com.krath.utilisim.sim.forge.materials.PlanType;
 import com.krath.utilisim.sim.forge.materials.StrategyType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -179,7 +181,53 @@ class StrategyServiceTest {
         float totalInterest = strategyService.calculateTotalInterestForOrdering(output.orderedDebts());
 
         assertTrue(totalInterest > 0);
-        // Should sum up interest calculations for all debts
+        // Units regression (API-05): the old formula returned 9000 * ~10% as a
+        // raw balance-times-percent number. Interest on these balances cannot
+        // exceed the balances themselves over a 50-year bound.
+        float totalBalance = 9000f;
+        assertTrue(totalInterest < totalBalance, "interest=" + totalInterest);
+    }
+
+    @Test
+    @DisplayName("Interest on a percentage APR is not 100x the balance")
+    void interestCalculationUsesCorrectUnits() {
+        List<DebtSnapshot> oneDebt = List.of(
+                new DebtSnapshot("tome-1", "Card", 1000f, 18f, 18f, 25f, 18f));
+
+        float interest = strategyService.calculateTotalInterestForOrdering(oneDebt);
+
+        // The live defect returned 18000.0 for this exact debt.
+        assertTrue(interest < 2000f, "interest=" + interest);
+        assertTrue(interest > 0f);
+    }
+
+    @Test
+    @DisplayName("orderFor maps PlanType and preserves baseline order")
+    void orderForMapsPlans() {
+        List<DebtInput> debts = List.of(
+                new DebtInput("a", "A", new java.math.BigDecimal("1000"),
+                        new java.math.BigDecimal("5"), new java.math.BigDecimal("25"),
+                        new java.math.BigDecimal("25"), new java.math.BigDecimal("2000")),
+                new DebtInput("b", "B", new java.math.BigDecimal("500"),
+                        new java.math.BigDecimal("30"), new java.math.BigDecimal("20"),
+                        new java.math.BigDecimal("20"), new java.math.BigDecimal("1000")),
+                new DebtInput("c", "C", new java.math.BigDecimal("2000"),
+                        new java.math.BigDecimal("18"), new java.math.BigDecimal("40"),
+                        new java.math.BigDecimal("40"), new java.math.BigDecimal("3000")));
+
+        assertEquals(List.of("a", "b", "c"),
+                strategyService.orderFor(debts, PlanType.CURRENT).stream()
+                        .map(DebtInput::tomeId).toList());
+        assertEquals(List.of("a", "b", "c"),
+                strategyService.orderFor(debts, PlanType.MINIMUM).stream()
+                        .map(DebtInput::tomeId).toList());
+        assertEquals(List.of("b", "a", "c"),
+                strategyService.orderFor(debts, PlanType.SNOWBALL).stream()
+                        .map(DebtInput::tomeId).toList());
+        assertEquals(List.of("b", "c", "a"),
+                strategyService.orderFor(debts, PlanType.AVALANCHE).stream()
+                        .map(DebtInput::tomeId).toList());
+        assertEquals(3, strategyService.orderFor(debts, PlanType.HYBRID).size());
     }
 
     @Test
@@ -233,7 +281,7 @@ class StrategyServiceTest {
     }
 
     @Test
-    @DisplayName("Strategy comparison: Snowball vs Avalanche")
+    @DisplayName("Strategy comparison: Avalanche is never more expensive than Snowball")
     void testStrategyComparison() {
         StrategyInput snowball = new StrategyInput(StrategyType.SNOWBALL, null, 100f, 0f);
         StrategyInput avalanche = new StrategyInput(StrategyType.AVALANCHE, null, 100f, 0f);
@@ -244,9 +292,9 @@ class StrategyServiceTest {
         float snowballInterest = strategyService.calculateTotalInterestForOrdering(snowballOutput.orderedDebts());
         float avalancheInterest = strategyService.calculateTotalInterestForOrdering(avalancheOutput.orderedDebts());
 
-        // Avalanche should typically result in less interest (but both are same total, just different order)
-        assertNotNull(snowballInterest);
-        assertNotNull(avalancheInterest);
+        assertTrue(avalancheInterest <= snowballInterest,
+                "avalanche=" + avalancheInterest + " snowball=" + snowballInterest);
+        assertTrue(snowballInterest > 0f);
     }
 }
 

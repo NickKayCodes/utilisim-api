@@ -10,6 +10,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -21,21 +22,21 @@ class StrategyMapperTest {
 
     private final StrategyMapper mapper = new StrategyMapper();
 
-    private Tome tome(float apr, float estimatedApr) {
+    private Tome tome(BigDecimal apr, BigDecimal estimatedApr) {
         Tome tome = new Tome();
         tome.setId("t1");
         tome.setName("Visa");
-        tome.setCurrentBalance(1200f);
+        tome.setCurrentBalance(new BigDecimal("1200"));
         tome.setApr(apr);
         tome.setEstimatedApr(estimatedApr);
-        tome.setMinimumDebtPayment(35f);
+        tome.setMinimumDebtPayment(new BigDecimal("35"));
         return tome;
     }
 
     @Test
     @DisplayName("toDebtSnapshot prefers a real APR")
     void mapsTomeWithApr() {
-        DebtSnapshot snapshot = mapper.toDebtSnapshot(tome(22f, 16f));
+        DebtSnapshot snapshot = mapper.toDebtSnapshot(tome(new BigDecimal("22"), new BigDecimal("16")));
 
         assertEquals("t1", snapshot.tomeId());
         assertEquals("Visa", snapshot.accountName());
@@ -49,7 +50,7 @@ class StrategyMapperTest {
     @Test
     @DisplayName("toDebtSnapshot uses the estimated APR when the real one is missing")
     void mapsTomeWithEstimatedApr() {
-        DebtSnapshot snapshot = mapper.toDebtSnapshot(tome(0f, 16f));
+        DebtSnapshot snapshot = mapper.toDebtSnapshot(tome(BigDecimal.ZERO, new BigDecimal("16")));
 
         assertEquals(16f, snapshot.interestRate());
     }
@@ -57,7 +58,7 @@ class StrategyMapperTest {
     @Test
     @DisplayName("toDebtSnapshots maps every tome")
     void mapsTomeList() {
-        List<DebtSnapshot> snapshots = mapper.toDebtSnapshots(List.of(tome(22f, 16f), tome(0f, 16f)));
+        List<DebtSnapshot> snapshots = mapper.toDebtSnapshots(List.of(tome(new BigDecimal("22"), new BigDecimal("16")), tome(BigDecimal.ZERO, new BigDecimal("16"))));
 
         assertEquals(2, snapshots.size());
         assertEquals(22f, snapshots.get(0).interestRate());

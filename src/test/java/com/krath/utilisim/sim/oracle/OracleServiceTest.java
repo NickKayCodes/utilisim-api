@@ -18,6 +18,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -30,14 +31,27 @@ class OracleServiceTest {
     private StrategyService strategyService;
 
     private OracleService oracleService;
+    private OracleService realOracle;
 
     @BeforeEach
     void setUp() {
         oracleService = new OracleService(ratioService, strategyService);
+        // Recommendation and analysis delegate to real ordering + projection.
+        realOracle = new OracleService(ratioService, new StrategyService());
     }
 
     private DebtSnapshot debt(String id, float balance, float apr, float estimatedApr) {
         return new DebtSnapshot(id, id, balance, apr, estimatedApr, 25f, apr);
+    }
+
+    private DebtSnapshot debt(String id, float balance, float apr, float estimatedApr, float minimum) {
+        return new DebtSnapshot(id, id, balance, apr, estimatedApr, minimum, apr);
+    }
+
+    private List<StrategyInput> candidates() {
+        return OracleService.RECOMMENDATION_CANDIDATES.stream()
+                .map(type -> new StrategyInput(type, null, 0f, 0f))
+                .toList();
     }
 
     @Test
@@ -84,80 +98,128 @@ class OracleServiceTest {
     @Test
     @DisplayName("recommendOptimalStrategy falls back to minimum-only without debts")
     void recommendsMinimumWithoutDebts() {
-        assertEquals("MINIMUM_ONLY", oracleService.recommendOptimalStrategy(null));
-        assertEquals("MINIMUM_ONLY", oracleService.recommendOptimalStrategy(List.of()));
+        assertEquals("MINIMUM_ONLY", realOracle.recommendOptimalStrategy(null));
+        assertEquals("MINIMUM_ONLY", realOracle.recommendOptimalStrategy(List.of()));
     }
 
     @Test
-    @DisplayName("recommendOptimalStrategy chooses avalanche for high interest")
+    @DisplayName("recommendOptimalStrategy falls back to minimum-only when nothing is owed")
+    void recommendsMinimumWithoutBalance() {
+        assertEquals("MINIMUM_ONLY", realOracle.recommendOptimalStrategy(List.of(
+                debt("t1", 0f, 20f, 20f),
+                debt("t2", 0f, 5f, 5f))));
+    }
+
+    @Test
+    @DisplayName("recommendOptimalStrategy chooses avalanche for a high-interest debt")
     void recommendsAvalancheForHighInterest() {
-        assertEquals("AVALANCHE", oracleService.recommendOptimalStrategy(
+        assertEquals("AVALANCHE", realOracle.recommendOptimalStrategy(
                 List.of(debt("t1", 1000f, 20f, 20f))));
     }
 
     @Test
     @DisplayName("recommendOptimalStrategy uses estimated APR when APR is missing")
     void recommendsAvalancheUsingEstimatedApr() {
-        assertEquals("AVALANCHE", oracleService.recommendOptimalStrategy(
+        assertEquals("AVALANCHE", realOracle.recommendOptimalStrategy(
                 List.of(debt("t1", 1000f, 0f, 25f))));
     }
 
     @Test
-    @DisplayName("recommendOptimalStrategy chooses snowball for many small low-interest debts")
-    void recommendsSnowballForManySmallDebts() {
+    @DisplayName("/recommend and /analyze return the same strategy for many debts")
+    void recommendationAgreesWithAnalysis() {
         List<DebtSnapshot> debts = List.of(
-                debt("t1", 500f, 0.05f, 0.05f),
-                debt("t2", 600f, 0.06f, 0.06f),
-                debt("t3", 700f, 0.07f, 0.07f),
-                debt("t4", 800f, 0.08f, 0.08f));
+                debt("t1", 500f, 5f, 5f),
+                debt("t2", 600f, 6f, 6f),
+                debt("t3", 700f, 7f, 7f),
+                debt("t4", 800f, 8f, 8f));
 
-        assertEquals("SNOWBALL", oracleService.recommendOptimalStrategy(debts));
+        String recommended = realOracle.recommendOptimalStrategy(debts);
+        StrategyAnalysis analysis = realOracle.analyzeStrategyEffectiveness(
+                debts, candidates(), new SimulationInput());
+
+        assertEquals(analysis.getRecommendedStrategy(), recommended);
+        assertTrue(analysis.getComparisons().stream()
+                .anyMatch(comparison -> comparison.strategyName().equals(recommended)));
     }
 
     @Test
-    @DisplayName("recommendOptimalStrategy chooses hybrid for a few low-interest debts")
-    void recommendsHybridForFewDebts() {
+    @DisplayName("/recommend and /analyze agree when every rate is identical")
+    void recommendationAgreesOnEqualRates() {
         List<DebtSnapshot> debts = List.of(
-                debt("t1", 5000f, 0.05f, 0.05f),
-                debt("t2", 6000f, 0.06f, 0.06f));
+                debt("t1", 1000f, 10f, 10f),
+                debt("t2", 400f, 10f, 10f),
+                debt("t3", 2200f, 10f, 10f));
 
-        assertEquals("HYBRID", oracleService.recommendOptimalStrategy(debts));
+        String first = realOracle.recommendOptimalStrategy(debts);
+        String second = realOracle.recommendOptimalStrategy(debts);
+        StrategyAnalysis analysis = realOracle.analyzeStrategyEffectiveness(
+                debts, candidates(), new SimulationInput());
+
+        assertEquals(first, second, "ties must not depend on request order");
+        assertEquals(analysis.getRecommendedStrategy(), first);
     }
 
     @Test
-    @DisplayName("recommendOptimalStrategy chooses avalanche for a single low-interest debt")
-    void recommendsAvalancheForSingleDebt() {
-        assertEquals("AVALANCHE", oracleService.recommendOptimalStrategy(
-                List.of(debt("t1", 5000f, 0.05f, 0.05f))));
-    }
+    @DisplayName("analyze ranks strategies by their projected interest")
+    void ranksStrategiesByProjectedInterest() {
+        List<DebtSnapshot> debts = List.of(
+                debt("t1", 2000f, 25f, 25f, 40f),
+                debt("t2", 500f, 5f, 5f, 20f));
+        SimulationInput input = new SimulationInput();
+        input.setExtraPayment(200f);
 
-    @Test
-    @DisplayName("analyzeStrategyEffectiveness ranks strategies by projected interest")
-    void analyzesStrategies() {
-        List<DebtSnapshot> debts = List.of(debt("t1", 1000f, 20f, 20f));
-        StrategyInput snowball = new StrategyInput(StrategyType.SNOWBALL, null, 0f, 0f);
-        StrategyInput avalanche = new StrategyInput(StrategyType.AVALANCHE, null, 0f, 0f);
-        StrategyOutput snowballOutput = new StrategyOutput("SNOWBALL", debts, "smallest first");
-        StrategyOutput avalancheOutput = new StrategyOutput("AVALANCHE", debts, "highest rate first");
+        StrategyAnalysis analysis = realOracle.analyzeStrategyEffectiveness(
+                debts, candidates(), input);
 
-        when(strategyService.orderDebts(debts, snowball)).thenReturn(snowballOutput);
-        when(strategyService.orderDebts(debts, avalanche)).thenReturn(avalancheOutput);
-        when(strategyService.calculateTotalInterestForOrdering(debts)).thenReturn(200f, 100f);
-
-        StrategyAnalysis analysis = oracleService.analyzeStrategyEffectiveness(
-                debts, List.of(snowball, avalanche), new SimulationInput());
-
-        assertEquals(2, analysis.getComparisons().size());
+        assertEquals(3, analysis.getComparisons().size());
         assertEquals("AVALANCHE", analysis.getRecommendedStrategy());
-        assertEquals(200f, analysis.getComparisons().get(0).projectedInterest());
-        assertEquals(100f, analysis.getComparisons().get(1).projectedInterest());
-        assertEquals(1, analysis.getComparisons().get(0).debtCount());
+
+        float avalanche = analysis.getComparisons().stream()
+                .filter(c -> c.strategyName().equals("AVALANCHE"))
+                .findFirst().orElseThrow().projectedInterest();
+        float snowball = analysis.getComparisons().stream()
+                .filter(c -> c.strategyName().equals("SNOWBALL"))
+                .findFirst().orElseThrow().projectedInterest();
+
+        assertTrue(avalanche < snowball, "avalanche=" + avalanche + " snowball=" + snowball);
+        assertEquals(2, analysis.getComparisons().get(0).debtCount());
+    }
+
+    @Test
+    @DisplayName("analyze actually reads input.extraPayment")
+    void analyzeUsesInput() {
+        List<DebtSnapshot> debts = List.of(
+                debt("t1", 2000f, 25f, 25f, 40f),
+                debt("t2", 500f, 5f, 5f, 20f));
+
+        StrategyAnalysis withoutExtra = realOracle.analyzeStrategyEffectiveness(
+                debts, candidates(), new SimulationInput());
+        SimulationInput withExtraInput = new SimulationInput();
+        withExtraInput.setExtraPayment(300f);
+        StrategyAnalysis withExtra = realOracle.analyzeStrategyEffectiveness(
+                debts, candidates(), withExtraInput);
+
+        float slow = withoutExtra.getComparisons().get(0).projectedInterest();
+        float fast = withExtra.getComparisons().get(0).projectedInterest();
+
+        assertTrue(fast < slow, "extra payments must reduce projected interest");
+    }
+
+    @Test
+    @DisplayName("analyze treats a null input as no extra payments")
+    void analyzeHandlesNullInput() {
+        List<DebtSnapshot> debts = List.of(debt("t1", 1000f, 12f, 12f));
+
+        StrategyAnalysis analysis = realOracle.analyzeStrategyEffectiveness(debts, candidates(), null);
+
+        assertEquals(3, analysis.getComparisons().size());
+        assertNotNull(analysis.getRecommendedStrategy());
     }
 
     @Test
     @DisplayName("analyzeStrategyEffectiveness falls back to minimum-only when there is nothing to compare")
     void analyzesNoStrategies() {
-        StrategyAnalysis analysis = oracleService.analyzeStrategyEffectiveness(
+        StrategyAnalysis analysis = realOracle.analyzeStrategyEffectiveness(
                 List.of(), List.of(), new SimulationInput());
 
         assertTrue(analysis.getComparisons().isEmpty());

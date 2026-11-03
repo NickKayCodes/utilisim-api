@@ -26,6 +26,14 @@ public class SimulationResult {
     private OffsetDateTime payoffDate;
     private float savingsComparedToBaseline; // vs. minimum-payment-only scenario
 
+    /**
+     * Unpaid balance at the end of the schedule.
+     *
+     * <p>{@code > 0} only when {@code status} is not {@code COMPLETED}: the plan
+     * ran out of term (or could not reduce principal) before becoming debt-free.</p>
+     */
+    private float remainingBalance;
+
     // Detailed schedule
     private List<AmortizationEntry> schedule;
 

@@ -1,10 +1,13 @@
 package com.krath.utilisim.ledger.leaf.create;
 
+import java.math.BigDecimal;
+
 public record TomeRequest(
         String name,
-        float currentBalance,
-        Float apr,               // nullable
-        float minimumDebtPayment,
-        float creditLimit,
+        BigDecimal currentBalance,
+        BigDecimal apr,               // nullable; the estimate is used when absent
+        BigDecimal minimumDebtPayment,
+        BigDecimal currentPayment,     // nullable; defaults to the minimum
+        BigDecimal creditLimit,
         String type
 ) {}

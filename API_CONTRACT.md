@@ -144,8 +144,8 @@ DTOs are Java records unless noted. Field names are the JSON names.
 
 | DTO | Fields |
 |---|---|
-| `TomeRequest` | `name`, `currentBalance`, `apr` (nullable), `minimumDebtPayment`, `creditLimit`, `type` |
-| `TomeResponse` | `id`, `userId`, `name`, `currentBalance`, `apr`, `estimatedApr`, `minimumDebtPayment`, `creditLimit`, `type`, `createdAt`, `updatedAt` |
+| `TomeRequest` | `name`, `currentBalance`, `apr` (nullable), `minimumDebtPayment`, `currentPayment` (nullable), `creditLimit`, `type` |
+| `TomeResponse` | `id`, `userId`, `name`, `currentBalance`, `apr` (nullable), `estimatedApr`, `minimumDebtPayment`, `currentPayment`, `creditLimit`, `type`, `createdAt`, `updatedAt` |
 
 ### Scenarios
 
@@ -157,7 +157,7 @@ DTOs are Java records unless noted. Field names are the JSON names.
 | DTO | Fields |
 |---|---|
 | `SimulationInput` | `id`, `userId`, `type`, `principal`, `interestRate`, `termMonths`, `minimumPayment`, `scenarioId`, `strategy`, `extraPayment`, `lumpSumPayment`, timestamps |
-| `SimulationResult` | `id`, `simulationInputId`, `userId`, `status`, `startedAt`, `completedAt`, `totalInterestPaid`, `totalPrincipalPaid`, `monthsToPayoff`, `payoffDate`, `savingsComparedToBaseline`, `schedule`, `archivedAt`, `ledgerEntryId` |
+| `SimulationResult` | `id`, `simulationInputId`, `userId`, `status`, `startedAt`, `completedAt`, `totalInterestPaid`, `totalPrincipalPaid`, `monthsToPayoff`, `payoffDate`, `savingsComparedToBaseline`, `remainingBalance`, `schedule`, `archivedAt`, `ledgerEntryId` |
 | `AmortizationEntry` | `monthIndex`, `date`, `payment`, `principalPaid`, `interestPaid`, `remainingBalance` |
 
 ### Strategy
@@ -333,18 +333,13 @@ Backed by `tome_ledger` and scoped to the authenticated user.
 }
 ```
 
-- **`apr` must be numeric today.** The request DTO allows `null`, but `Tome.apr` is a primitive
-  `float`, and `TomeService.createTome` unboxes `request.apr()` while building the entity.
-  Omitting `apr` or sending `null` throws `NullPointerException` before the save and returns
-  **`500`**. The advertised `estimatedApr` fallback is unreachable until the entity or service is
-  fixed. See §8 #16.
-- `TomeResponse.apr` is a boxed `Float`, but it is always populated from the primitive entity
-  field. A successful create or list never returns `null` for `apr`.
-- If the null path were fixed as written, `TomeService.calculateEstimatedApr` returns `0.16`,
-  which is stored as **0.16 percent**, not 16 percent. Treat the estimate as unimplemented, not as
-  a usable fallback.
-- When `apr` is supplied, `estimatedApr` is set to the same value. There is no separate estimate.
-- `currentBalance`, `minimumDebtPayment`, and `creditLimit` are primitives. Always send numbers.
+- **`apr` is nullable.** Omitting it or sending `null` stores `estimatedApr = 16.0000` (percent);
+  it does not fail. A supplied `apr` is copied to `estimatedApr`. See §8 #16.
+- `TomeResponse.apr` is `null` when the client did not supply one; `estimatedApr` is always numeric.
+- `currentPayment` is optional. When absent, the server stores `minimumDebtPayment`. When supplied,
+  it must be `>= minimumDebtPayment`; a lower value returns **400** before the save.
+- `currentBalance`, `minimumDebtPayment`, and `creditLimit` are decimal JSON numbers, stored as
+  `BigDecimal`; send numbers, not strings.
 - `type` is a free-form string; there is no enum validation. Known UI values: `CREDIT_CARD`,
   `STUDENT_LOAN`, `AUTO_LOAN`, `MORTGAGE`, `PERSONAL_LOAN`, `LINE_OF_CREDIT`, `OTHER`.
 - `apr` and `estimatedApr` are **percentages** (`19.99` = 19.99%). `SimulationInput.interestRate`
@@ -381,8 +376,8 @@ Requires a token.
 | Field | Type | Notes |
 |---|---|---|
 | `principal` | float | Starting balance |
-| `interestRate` | float | Annual decimal; divided by 12 internally |
-| `termMonths` | int | Requested term. The loop also stops at `termMonths * 2`; this is not a guarantee of payoff |
+| `interestRate` | float | Annual **decimal** (`0.2` = 20%); divided by 12 internally |
+| `termMonths` | int | Planning horizon. The schedule stops here; if money is still owed the run is `FAILED` (clamped to 600 months) |
 | `minimumPayment` | float | Monthly minimum |
 | `extraPayment` | float | Recurring extra per month |
 | `lumpSumPayment` | float | One-time injection applied before month 1 |
@@ -390,7 +385,7 @@ Requires a token.
 | `id`, `userId` | string | Echoed into `simulationInputId` and `userId` in the result |
 | `type`, `scenarioId`, timestamps | — | Accepted but ignored |
 
-**200**
+**200** — a completed run
 
 ```json
 {
@@ -400,11 +395,12 @@ Requires a token.
   "status": "COMPLETED",
   "startedAt": "2026-01-15T12:00:00Z",
   "completedAt": "2026-01-15T12:00:01Z",
-  "totalInterestPaid": 226.17,
-  "totalPrincipalPaid": 973.83,
-  "monthsToPayoff": 24,
+  "totalInterestPaid": 250.0,
+  "totalPrincipalPaid": 1000.0,
+  "monthsToPayoff": 25,
   "payoffDate": "2028-01-15T12:00:00Z",
   "savingsComparedToBaseline": 0.0,
+  "remainingBalance": 0.0,
   "schedule": [
     {
       "monthIndex": 1,
@@ -420,26 +416,165 @@ Requires a token.
 }
 ```
 
-- `status` enum: `RUNNING`, `COMPLETED`, `FAILED`. A normal run always ends `COMPLETED`, even if
-  money is still owed.
-- `monthsToPayoff` is exactly `schedule.length`. The loop runs while `balance > 0` **and**
-  `month < termMonths * 2`, so the schedule is capped at twice the requested term.
-- If the payment does not cover monthly interest, or the term is short, the schedule stops at the
-  cap with `remainingBalance > 0` and no unpaid/overdue signal. The example above is intentionally
-  capped: `termMonths` is 12, the result has 24 rows, and 26.17 is still outstanding.
-- `payoffDate` is exactly the `date` of the last schedule entry (or `now` for an empty schedule).
-  It is not computed separately and cannot differ from the final row.
-- `totalPrincipalPaid` + `totalInterestPaid` equals the sum of `payment`, not necessarily
-  `principal`; an underfunded run can leave a balance.
+**200** — a plan that does not pay the debt off
+
+```json
+{
+  "status": "FAILED",
+  "monthsToPayoff": 0,
+  "payoffDate": null,
+  "remainingBalance": 561.5,
+  "savingsComparedToBaseline": 0.0
+}
+```
+
+- `status` is `COMPLETED` **only when the final balance is zero**. A run that reaches the term
+  horizon with money still owed is `FAILED`. So is a run whose payment never touches principal
+  (the schedule is then empty).
+- `monthsToPayoff` is the number of months actually simulated when `COMPLETED`, and `0` when
+  `FAILED`. Read `remainingBalance` for the unpaid amount; do not read `monthsToPayoff` as
+  "months attempted".
+- `payoffDate` is the `date` of the last schedule entry when `COMPLETED`, `now` for a completed
+  run that needed no payments (a lump sum cleared it), and `null` when `FAILED`.
+- `remainingBalance` is `0` for a completed run and the unpaid balance for a failed one.
+- `termMonths` is a horizon, not a guarantee: a plan that needs more months than the horizon
+  fails. `termMonths` is clamped to 600 months so a request cannot allocate an unbounded schedule.
+- `totalPrincipalPaid` + `totalInterestPaid` equals the sum of `payment`. On a failed run the
+  principal paid is less than `principal`, and the difference is `remainingBalance` plus any
+  interest that was never covered.
 - `savingsComparedToBaseline` is the interest on a baseline schedule (extra = 0, lump sum = 0)
-  minus the interest on this schedule. It is `0` when both scenarios match.
+  minus the interest on this schedule. It is `0` for a failed run, because a plan that never
+  cleared the debt cannot claim savings.
 - `userId` and `simulationInputId` are copies of client-supplied input fields. They are not
   derived from the bearer token. Do not trust them for authorization.
 - The result is **not persisted**. There is no endpoint to fetch a past run.
 
 ---
 
-### 5.5 Strategy
+### 5.5 Simulation ledger (current path)
+
+The legacy `/api/assemble/run` above is deprecated. New work uses the ledger endpoints, which run
+one or more plans over the caller's **debt set** and return monthly timelines.
+
+#### Plans
+
+`PlanType`: `CURRENT`, `MINIMUM`, `SNOWBALL`, `AVALANCHE`, `HYBRID`.
+
+| Plan | Payment rule | Allocation |
+|---|---|---|
+| `CURRENT` | each debt pays its own `currentPayment` (defaults to minimum) | none |
+| `MINIMUM` | each debt pays its `minimumDebtPayment` | none |
+| `SNOWBALL` | minimums on every debt | surplus to smallest balance |
+| `AVALANCHE` | minimums on every debt | surplus to highest APR |
+| `HYBRID` | minimums on every debt | banded rule |
+
+`extraPayment` and `lumpSumPayment` apply to the three strategy plans only. `CURRENT` and
+`MINIMUM` ignore them, even when the request carries them.
+
+#### `POST /api/simulate/compare`
+
+```json
+{
+  "tomeIds": ["<TOME_ID>"],
+  "extraPayment": 100,
+  "lumpSumPayment": 500,
+  "lumpSumMonth": 1,
+  "startMonth": "2026-06-01",
+  "horizonMonths": 120,
+  "plans": ["CURRENT", "MINIMUM", "SNOWBALL", "AVALANCHE", "HYBRID"]
+}
+```
+
+All fields except `tomeIds` are optional. Empty/null `tomeIds` means all of the caller's accounts;
+empty/null `plans` means all five.
+
+**200** — `ComparisonResponse`:
+
+```json
+{
+  "comparisonGroupId": "<UUID>",
+  "startMonth": "2026-06-01",
+  "horizonMonths": 120,
+  "totalBalance": 22658.73,
+  "recommendedPlan": "AVALANCHE",
+  "recommendationBasis": "lowest total interest among plans that paid the debt off",
+  "plans": [
+    {
+      "runId": 12,
+      "plan": "AVALANCHE",
+      "label": "AVALANCHE",
+      "status": "COMPLETED",
+      "terminationReason": "PAID_OFF",
+      "monthsToPayoff": 35,
+      "payoffDate": "2029-04-01",
+      "totalInterest": 4211.10,
+      "totalPaid": 26869.83,
+      "finalBalance": 0.00,
+      "peakUtilizationPct": 89.74,
+      "months": [
+        {
+          "monthIndex": 1,
+          "monthLabel": "Jun-26",
+          "periodStart": "2026-06-01",
+          "startingBalance": 22658.73,
+          "monthlyInterest": 339.88,
+          "minimumDue": 562.84,
+          "actualPayment": 662.84,
+          "extraPayment": 100.00,
+          "lumpSumApplied": 500.00,
+          "remainingBalance": 21835.77,
+          "utilizationPct": 87.34,
+          "interestPaid": 339.88,
+          "amountToCoverInterest": 339.88,
+          "debts": []
+        }
+      ]
+    }
+  ]
+}
+```
+
+- `status` is lifecycle (`PENDING`, `RUNNING`, `COMPLETED`, `FAILED`).
+- `terminationReason` is outcome (`NONE`, `PAID_OFF`, `HORIZON_REACHED`, `STAGNANT`).
+  `PAID_OFF` maps to `COMPLETED`; `HORIZON_REACHED` and `STAGNANT` map to `FAILED`.
+- A `FAILED` timeline has `monthsToPayoff: 0`, `payoffDate: null` and a positive
+  `remainingBalance`. `monthsToPayoff` is not the number of simulated months; use `months.length`
+  for that.
+- `recommendedPlan` is derived from the returned timelines; it is `null` when no plan repaid.
+- `amountToCoverInterest` equals `monthlyInterest`.
+- `CURRENT` and `MINIMUM` timelines are identical whether extra/lump sums are sent or zero.
+
+#### `POST /api/simulate/run`
+
+Same body shape minus `plans`, plus `plan`. Returns one `PlanTimeline` (with `runId`).
+
+#### `GET /api/simulate/runs/{runId}`
+
+Returns the persisted `PlanTimeline` for the caller.
+
+#### `GET /api/simulate/comparisons/{comparisonGroupId}`
+
+Returns the persisted `ComparisonResponse` for the caller; the recommendation is re-derived from the
+stored timelines.
+
+#### `GET /api/simulate/runs?limit=20`
+
+Returns the caller's most recent `PlanTimeline`s, newest first.
+
+#### Validation
+
+- Foreign or unknown `tomeId` → **404**.
+- Empty debt set → **400**.
+- `horizonMonths` 1..600; `lumpSumMonth` within the horizon; payments >= 0.
+- `currentPayment >= minimumDebtPayment` when set.
+- `extraPayment`/`lumpSumPayment` on a baseline are ignored, not an error.
+
+#### `POST /api/tomes`
+
+`TomeRequest`/`TomeResponse` now include `currentPayment` and use decimal JSON numbers for money.
+`apr` is nullable; when absent the stored estimate is 16.0000 (percent).
+
+### 5.6 Strategy
 
 All strategy endpoints require a token.
 
@@ -526,10 +661,17 @@ Body is a bare array of `DebtSnapshot`.
 **200** — a bare JSON string such as `"AVALANCHE"` or `"MINIMUM_ONLY"`. An empty array returns
 `"MINIMUM_ONLY"`.
 
-- `DebtSnapshot.apr` and `estimatedApr` are percentages. The recommender compares the maximum
-  against `0.15`, not `15`, so **any account above 0.15% APR returns `"AVALANCHE"`**. This is a
-  unit bug, not a deliberate threshold. The remaining branches are only reachable for near-zero
-  rates.
+- `DebtSnapshot.apr` and `estimatedApr` are percentages; they are converted once, in
+  `AprRates`, before any balance math.
+- The answer is the cheapest of `SNOWBALL`, `AVALANCHE`, and `HYBRID`, scored with the same
+  projection and the same ranking as `/analyze`. The old `apr > 0.15` threshold is gone, so the
+  percent-vs-decimal bug (API-06) cannot recur and the two endpoints cannot disagree (API-17).
+- `/recommend` assumes no extra payments, because the request carries only debts. Send extra or
+  lump-sum payments to `/analyze`.
+- An empty array, or a set where every balance is `0`, returns `"MINIMUM_ONLY"`.
+- When every payment is consumed by a minimum, all orderings cost the same (see `/analyze`).
+  Ties are broken by strategy name, so the answer is `"AVALANCHE"` — identical plans, not a
+  considered preference.
 
 #### `POST /api/oracle/strategy/analyze`
 
@@ -558,7 +700,7 @@ Body is a bare array of `DebtSnapshot`.
   "comparisons": [
     {
       "strategyName": "SNOWBALL",
-      "projectedInterest": 180.0,
+      "projectedInterest": 200.0,
       "debtCount": 1,
       "description": "Snowball: Pay off smallest balance first for psychological momentum"
     }
@@ -569,12 +711,18 @@ Body is a bare array of `DebtSnapshot`.
 ```
 
 - `strategies` must be non-empty; otherwise **400**.
-- `input` is required; only `extraPayment` and `lumpSumPayment` are read.
+- `input` is required. `input.extraPayment` and `input.lumpSumPayment` drive the projection; the
+  per-strategy payment copies are ignored.
 - Unknown strategy names fail inside `StrategyType.valueOf` → **400**.
-- The projection is not strategy-sensitive. `projectedInterest` is computed as
-  `sum(currentBalance * apr)` over the debt set, which is order-independent, so **every strategy
-  returns the same number for the same debts**. Ordering changes only the sequence of
-  `orderedDebts`. Do not present the output as guaranteed savings.
+- `projectedInterest` comes from `DebtProjection`, not from `balance * apr`. Interest accrues
+  monthly, every debt pays its minimum, and the rest of the budget attacks debts in the order the
+  strategy produced. Ordering therefore changes the total **once the plan pays more than the
+  minimums**; with `extraPayment: 0` and no surplus, every strategy costs the same.
+- `recommendedStrategy` uses the same ranking as `/recommend`: plans that clear the debt first,
+  then lower projected interest, then fewer months, then strategy name. For the same debts the two
+  endpoints agree whenever the analysis includes `SNOWBALL`, `AVALANCHE`, and `HYBRID`.
+- A strategy whose projection does not clear the debt is ranked below one that does. Its
+  `projectedInterest` is the interest accrued over the 600-month bound, not a payoff cost.
 
 #### `GET /api/oracle/strategy/is-deterministic/{strategyType}`
 
@@ -582,9 +730,13 @@ Body is a bare array of `DebtSnapshot`.
 
 #### `POST /api/oracle/strategy/calculate-total-interest`
 
-Body: bare array of `DebtSnapshot`. **200** — bare number equal to
-`sum(currentBalance * apr)` (using `estimatedApr` when `apr <= 0`). The result does not depend on
-array order and is **not** an amortization projection.
+Body: bare array of `DebtSnapshot`. **200** — the projected interest for paying the debts in the
+order supplied, using the same projection as `/analyze` with no extra or lump-sum payment.
+
+- Uses percentages correctly (`AprRates`) and returns a money amount, not a balance-times-percent
+  figure. A `1000` balance at `18` no longer returns `18000`.
+- Without surplus every payment is a minimum, so the number is the same for every ordering of the
+  same debts. Pass `extraPayment` to `/analyze` to see ordering change the cost.
 
 ---
 
@@ -596,7 +748,7 @@ The application uses PostgreSQL. Table creation and updates are currently handle
 | Table | Entity | Key fields | Notes |
 |---|---|---|---|
 | `utilisim_user` | `AppUser` | `id`, `username`, `email`, `password` | Password is BCrypt-hashed; `getUsername()` returns email; no role column |
-| `tome_ledger` | `Tome` | `id`, `user_id`, `name`, `current_balance`, `apr`, `estimated_apr`, `minimum_debt_payment`, `credit_limit`, `type`, timestamps | Scoped by `user_id`; `apr` is a primitive `float`, so the null-APR request fails before save |
+| `tome_ledger` | `Tome` | `id`, `user_id`, `name`, `current_balance`, `apr`, `estimated_apr`, `minimum_debt_payment`, `current_payment`, `credit_limit`, `type`, timestamps | Scoped by `user_id`; `apr` is nullable and stores the 16.0000 estimate when absent; `current_payment` defaults to the minimum and is validated at write |
 | `scenario_context` | `ScenarioContext` | `id`, `user_id`, `name`, `strategy`, `extra_payment`, `lump_sum_payment`, timestamps | The server never sets `user_id`; a client-supplied value is stored. All rows are global |
 | `strategy_config` | `StrategyConfig` | `id`, `user_id`, `scenario_id`, `strategy_type`, `custom_debt_order`, payments, description | Persistence layer exists but no controller calls it |
 | `simulation_run` | `Simulation` | `int id`, `user_id`, `type`, `status`, `input_id`, `result_id`, timestamps | Entity exists; no write path |
@@ -650,7 +802,7 @@ current run endpoint.
 | 2 | ~~Scenarios are global~~ **(fixed)** | Owner now comes from the principal; every query is owner-scoped | — |
 | 3 | No account update endpoint | Users delete and re-create accounts | Add `PUT /api/tomes/{id}` |
 | 4 | Tome delete returns 500 for missing/foreign ids | Incorrect status codes | Replace `RuntimeException` with typed 404/403 exceptions |
-| 5 | Analysis is not strategy-sensitive | Identical projections across strategies | Simulate each ordering against a real multi-debt schedule |
+| 5 | ~~Analysis is not strategy-sensitive~~ **(fixed)** | Projection now simulates per-debt payoff in the strategy's order; differences appear once the plan pays above the minimums | Add an extra-payment field to the Compare page (gap: the UI currently sends `0`) |
 | 6 | No roles or permissions | Any authenticated user can do everything | Add roles, authorities, and URL/method rules |
 | 7 | ~~Random JWT key per startup~~ **(fixed)** | Key loads from `JWT_SECRET`; an unset value logs a warning and uses an ephemeral key | Set `JWT_SECRET` in every deployed environment |
 | 8 | `ddl-auto=update`, no migrations | Schema drift and unsafe deploys | Add Flyway or Liquibase; use `validate` |
@@ -661,12 +813,12 @@ current run endpoint.
 | 13 | `StrategyConfig` and `StrategyEngineIntegration` are unwired | Dead code obscures the real flow | Expose configuration endpoints or remove the unused layer |
 | 14 | ~~`GET /api/sentinel/users/search/by-email` is unsafe~~ **(fixed)** | Endpoint removed; `GET /api/sentinel/users/me` returns an id/username/email DTO and `AppUser.password` is `@JsonIgnore`d | — |
 | 15 | Broad `Exception` handler returns 500 for control-flow errors | Wrong statuses and noisy logs | Introduce domain exceptions and specific handlers |
-| 16 | Blank/omitted `apr` on `POST /api/tomes` → `500` NPE | The UI offers a blank APR and the contract advertises an estimate that never runs | Make `Tome.apr` nullable or validate the request; wire the estimate correctly |
+| 16 | ~~Blank/omitted `apr` on `POST /api/tomes` → `500` NPE~~ **(fixed)** | Null APR now stores the 16.0000 percent estimate; `currentPayment` is validated at write | — |
 | 17 | ~~Invalid/expired bearer token → `500` with a stack trace~~ **(fixed)** | Filter treats any token failure as anonymous → `401`; stack traces and exception text are suppressed | — |
-| 18 | Simulation stops at `termMonths * 2` with a balance still owed | A "completed" result can be an unpaid schedule | Loop until payoff or return an explicit unpaid/insufficient-payment status |
+| 18 | ~~Simulation stops at `termMonths * 2` with a balance still owed~~ **(fixed)** | Only `COMPLETED` when the balance reaches zero; otherwise `FAILED` with `remainingBalance`, `payoffDate: null` and `monthsToPayoff: 0`. The term is now a horizon, not a doubled cap | Add distinct `PAYMENT_TOO_LOW` / `TERM_REACHED` reasons |
 | 19 | `SimulationResult.userId` and `simulationInputId` echo client input | Untrusted ids look like server-derived identity | Derive identity from the principal and stop echoing request ids |
-| 20 | `calculateEstimatedApr` returns `0.16`, not `16` | A future null-APR fix would store a near-zero rate | Remove the estimate or return a percentage and test it |
-| 21 | Recommendation compares percentage APR against `0.15` | Nearly every account returns `AVALANCHE`; the heuristic is inert | Use `15.0` or convert to decimals before comparing; add tests |
+| 20 | ~~`calculateEstimatedApr` returns `0.16`, not `16`~~ **(fixed)** | The constant is `16.0`, in percent, and tested | The null-APR path that would call it is still open (#16) |
+| 21 | ~~Recommendation compares percentage APR against `0.15`~~ **(fixed)** | The threshold heuristic was replaced by the shared projection and ranking; `/recommend` and `/analyze` agree | — |
 
 ---
 
@@ -678,7 +830,10 @@ current run endpoint.
 3. ~~Remove or secure the user-search endpoint.~~ Done: replaced by `GET /me`.
 4. ~~Make scenarios user-scoped~~ Done; account updates are still open.
 5. Persist simulation runs and expose history/detail endpoints.
-6. Make projections strategy-sensitive before presenting savings, and stop hiding the term cap.
+6. ~~Make projections strategy-sensitive and stop hiding the term cap.~~ Done: `DebtProjection`
+   ranks real payoffs, and a plan that does not clear the debt is `FAILED` with
+   `remainingBalance`. The Compare page still sends no extra payment, so add that input to make
+   the strategy difference visible.
 7. Move secrets and datasource settings to environment variables.
 8. Add Flyway/Liquibase, bean validation, pagination, OpenAPI, and error-response scrubbing.
 9. Expand unit and integration coverage, including Testcontainers.
@@ -715,6 +870,11 @@ invites clients to build against them.
 | POST | `/api/tomes` | yes | `TomeRequest` | 200 `TomeResponse` |
 | DELETE | `/api/tomes/{id}` | yes | — | 204 / 500 JSON |
 | POST | `/api/assemble/run` | yes | `SimulationInput` | 200 `SimulationResult` |
+| POST | `/api/simulate/compare` | yes | `ComparisonRequest` | 200 `ComparisonResponse` |
+| POST | `/api/simulate/run` | yes | `PlanRunRequest` | 200 `PlanTimeline` |
+| GET | `/api/simulate/runs/{runId}` | yes | — | 200 `PlanTimeline` |
+| GET | `/api/simulate/runs?limit=20` | yes | — | 200 `PlanTimeline[]` |
+| GET | `/api/simulate/comparisons/{comparisonGroupId}` | yes | — | 200 `ComparisonResponse` |
 | POST | `/api/oracle/strategy/order` | yes | `StrategyOrderRequest` | 200 `StrategyOutput` |
 | POST | `/api/oracle/strategy/recommend` | yes | `DebtSnapshot[]` | 200 string |
 | POST | `/api/oracle/strategy/analyze` | yes | `StrategyAnalysisRequest` | 200 `StrategyAnalysis` |
@@ -729,7 +889,8 @@ Enums:
 
 - `StrategyType`: `SNOWBALL`, `AVALANCHE`, `HYBRID`, `CUSTOM`, `MINIMUM_ONLY`
 - `SimulationType`: `DEBT_PAYOFF`, `CASH_FLOW`, `SAVINGS_GROWTH`
-- `SimulationStatus`: `RUNNING`, `COMPLETED`, `FAILED`
+- `SimulationStatus`: `RUNNING`, `COMPLETED`, `FAILED`. A run is `COMPLETED` only when the
+  balance reaches zero; otherwise it is `FAILED` and carries `remainingBalance`.
 
 ---
 

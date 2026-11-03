@@ -15,6 +15,7 @@ public class TomeMapper {
                 tome.getApr(),
                 tome.getEstimatedApr(),
                 tome.getMinimumDebtPayment(),
+                tome.getCurrentPayment(),
                 tome.getCreditLimit(),
                 tome.getType(),
                 tome.getCreatedAt(),
@@ -26,4 +27,3 @@ public class TomeMapper {
         return tomes.stream().map(TomeMapper::toResponse).toList();
     }
 }
-

@@ -12,6 +12,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 
@@ -33,8 +34,17 @@ class TomeServiceTest {
         ReflectionTestUtils.setField(service, "scribe", scribe);
     }
 
-    private TomeRequest request(Float apr) {
-        return new TomeRequest("Visa", 1200f, apr, 35f, 3000f, "CREDIT_CARD");
+    private BigDecimal bd(String value) {
+        return new BigDecimal(value);
+    }
+
+    private TomeRequest request(BigDecimal apr) {
+        return request(apr, null);
+    }
+
+    private TomeRequest request(BigDecimal apr, BigDecimal currentPayment) {
+        return new TomeRequest(
+                "Visa", bd("1200"), apr, bd("35"), currentPayment, bd("3000"), "CREDIT_CARD");
     }
 
     @Test
@@ -42,36 +52,60 @@ class TomeServiceTest {
     void createsTome() {
         when(scribe.save(any(Tome.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        Tome created = service.createTome(request(22f), "user-1");
+        Tome created = service.createTome(request(bd("22")), "user-1");
 
         assertEquals("user-1", created.getUserId());
         assertEquals("Visa", created.getName());
-        assertEquals(1200f, created.getCurrentBalance());
-        assertEquals(22f, created.getApr());
-        assertEquals(22f, created.getEstimatedApr());
-        assertEquals(35f, created.getMinimumDebtPayment());
-        assertEquals(3000f, created.getCreditLimit());
+        assertEquals(bd("1200.00"), created.getCurrentBalance());
+        assertEquals(bd("22.0000"), created.getApr());
+        assertEquals(bd("22.0000"), created.getEstimatedApr());
+        assertEquals(bd("35.00"), created.getMinimumDebtPayment());
+        assertEquals(bd("35.00"), created.getCurrentPayment());
+        assertEquals(bd("3000.00"), created.getCreditLimit());
         assertEquals("CREDIT_CARD", created.getType());
         assertNotNull(created.getCreatedAt());
         assertNotNull(created.getUpdatedAt());
     }
 
     @Test
-    @DisplayName("createTome throws when APR is missing (known defect API-01)")
-    void rejectsMissingApr() {
-        // Tome.apr is a primitive float, so TomeService.createTome unboxes a null
-        // Float before it can fall back to the estimated APR.
-        assertThrows(NullPointerException.class, () -> service.createTome(request(null), "user-1"));
+    @DisplayName("currentPayment defaults to the minimum when omitted")
+    void defaultsCurrentPaymentToMinimum() {
+        when(scribe.save(any(Tome.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Tome created = service.createTome(request(bd("22")), "user-1");
+
+        assertEquals(created.getMinimumDebtPayment(), created.getCurrentPayment());
+    }
+
+    @Test
+    @DisplayName("createTome rejects a current payment below the minimum")
+    void rejectsCurrentPaymentBelowMinimum() {
+        IllegalArgumentException ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.createTome(request(bd("22"), bd("10")), "user-1"));
+
+        assertTrue(ex.getMessage().contains("below the minimum"));
         verify(scribe, never()).save(any(Tome.class));
     }
 
     @Test
-    @DisplayName("calculateEstimatedApr returns the 16% placeholder")
+    @DisplayName("a missing APR is accepted and falls back to the 16% estimate")
+    void fallsBackToEstimatedApr() {
+        when(scribe.save(any(Tome.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Tome created = service.createTome(request(null), "user-1");
+
+        assertNull(created.getApr());
+        assertEquals(bd("16.0000"), created.getEstimatedApr());
+        verify(scribe).save(any(Tome.class));
+    }
+
+    @Test
+    @DisplayName("the estimated APR placeholder is 16 percent, not 0.16 percent")
     void estimatesAprAtSixteenPercent() {
-        assertEquals(
-                0.16,
-                (double) ReflectionTestUtils.invokeMethod(service, "calculateEstimatedApr", request(null)),
-                0.0001);
+        // Units regression (API-07): the value is a percentage, so it is 16.0.
+        assertEquals(16.0, TomeService.ESTIMATED_APR_PERCENT, 0.0001);
+        assertEquals(16f, (float) TomeService.ESTIMATED_APR_PERCENT);
     }
 
     @Test

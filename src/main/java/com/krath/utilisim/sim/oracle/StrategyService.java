@@ -1,5 +1,7 @@
 package com.krath.utilisim.sim.oracle;
 
+import com.krath.utilisim.sim.forge.anvil.DebtInput;
+import com.krath.utilisim.sim.forge.materials.PlanType;
 import com.krath.utilisim.sim.forge.materials.StrategyType;
 import org.springframework.stereotype.Service;
 
@@ -174,16 +176,67 @@ public class StrategyService {
     }
 
     /**
+     * Plan-aware ordering for the FORGE ledger (CURRENT_PLAN_DESIGN §3.3).
+     *
+     * <p>Only the three strategy plans are ordered. {@code CURRENT} and
+     * {@code MINIMUM} keep the supplied order because no surplus is allocated.
+     * This method reuses the single ordering implementation above; the
+     * BigDecimal debts are converted for comparison only, never for money
+     * math.</p>
+     */
+    public List<DebtInput> orderFor(List<DebtInput> debts, PlanType plan) {
+        if (plan == null || !plan.isStrategy()) {
+            return new ArrayList<>(debts);
+        }
+
+        List<DebtSnapshot> snapshots = debts.stream()
+                .map(this::toSnapshot)
+                .toList();
+
+        StrategyOutput output = orderDebts(
+                snapshots,
+                new StrategyInput(plan.toStrategyType(), null, 0f, 0f));
+
+        Map<String, DebtInput> byId = new LinkedHashMap<>();
+        for (DebtInput debt : debts) {
+            byId.put(debt.tomeId(), debt);
+        }
+
+        List<DebtInput> ordered = new ArrayList<>();
+        for (DebtSnapshot snapshot : output.orderedDebts()) {
+            DebtInput debt = byId.get(snapshot.tomeId());
+            if (debt != null) {
+                ordered.add(debt);
+            }
+        }
+        return ordered;
+    }
+
+    private DebtSnapshot toSnapshot(DebtInput debt) {
+        float apr = debt.apr().floatValue();
+        return new DebtSnapshot(
+                debt.tomeId(),
+                debt.accountName(),
+                debt.currentBalance().floatValue(),
+                apr,
+                apr,
+                debt.minimumPayment().floatValue(),
+                apr);
+    }
+
+    /**
      * Calculate the total interest for a given ordering strategy.
-     * This is useful for comparing strategies.
+     *
+     * <p>Each debt's minimum payment is applied, then the surplus (freed
+     * minimums) cascades down the ordering. This is what makes the number
+     * strategy-sensitive; a plain {@code sum(balance * apr)} is not, and its
+     * units were also 100× too large (DEFECTS API-05).</p>
      *
      * @param orderedDebts The debts ordered by strategy
-     * @return Total interest across all debts (simple calculation)
+     * @return Projected interest until payoff, in currency units
      */
     public float calculateTotalInterestForOrdering(List<DebtSnapshot> orderedDebts) {
-        return orderedDebts.stream()
-            .map(debt -> debt.currentBalance() * (debt.apr() > 0 ? debt.apr() : debt.estimatedApr()))
-            .reduce(0f, Float::sum);
+        return DebtProjection.project(orderedDebts, 0f, 0f).totalInterest();
     }
 
     /**

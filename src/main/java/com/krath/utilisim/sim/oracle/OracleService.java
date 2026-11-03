@@ -3,10 +3,13 @@ package com.krath.utilisim.sim.oracle;
 import com.krath.utilisim.archive.scenario.ScenarioContext;
 import com.krath.utilisim.sim.chronos.projection.SavingsProjection;
 import com.krath.utilisim.sim.forge.hammer.SimulationInput;
+import com.krath.utilisim.sim.forge.materials.StrategyType;
 import com.krath.utilisim.sim.ratio.AmortizationEntry;
 import com.krath.utilisim.sim.ratio.calculate.RatioService;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -16,6 +19,35 @@ import java.util.List;
  */
 @Service
 public class OracleService {
+
+    /**
+     * Strategies `/recommend` is allowed to choose from.
+     *
+     * <p>CUSTOM needs a client-supplied order and MINIMUM_ONLY is the absence of
+     * a strategy, so neither is a recommendation candidate.</p>
+     */
+    static final List<StrategyType> RECOMMENDATION_CANDIDATES = List.of(
+            StrategyType.SNOWBALL,
+            StrategyType.AVALANCHE,
+            StrategyType.HYBRID
+    );
+
+    /**
+     * Deterministic ranking used by both endpoints.
+     *
+     * <ol>
+     *   <li>Plans that actually clear the debt beat plans that do not.</li>
+     *   <li>Lower projected interest wins.</li>
+     *   <li>Then the shorter payoff.</li>
+     *   <li>Then the strategy name, so identical outcomes never depend on
+     *       request order (the old tie-break was array order, API-17).</li>
+     * </ol>
+     */
+    private static final Comparator<Ranked> RANKING = Comparator
+            .comparing((Ranked ranked) -> !ranked.projection().repaid())
+            .thenComparing(ranked -> ranked.projection().totalInterest())
+            .thenComparing(ranked -> ranked.projection().months())
+            .thenComparing(Ranked::name);
 
     private final RatioService ratioService;
     private final StrategyService strategyService;
@@ -66,45 +98,36 @@ public class OracleService {
     }
 
     /**
-     * Determine the optimal strategy for a given set of debts.
-     * Analyzes debt characteristics to recommend best strategy.
+     * Determine the optimal strategy for a set of debts.
+     *
+     * <p>This runs the same projection and the same ranking as
+     * {@code /analyze}, so the two endpoints cannot disagree (API-17). It assumes
+     * no extra payments, matching the request shape of {@code /recommend}; send
+     * extra payments to {@code /analyze} instead.</p>
      */
     public String recommendOptimalStrategy(List<DebtSnapshot> debts) {
         if (debts == null || debts.isEmpty()) {
             return "MINIMUM_ONLY";
         }
-
-        // Calculate metrics
-        float maxInterestRate = debts.stream()
-            .map(d -> d.apr() > 0 ? d.apr() : d.estimatedApr())
-            .max(Float::compare)
-            .orElse(0f);
-
-        float minBalance = debts.stream()
-            .map(DebtSnapshot::currentBalance)
-            .min(Float::compare)
-            .orElse(0f);
-
-        int debtCount = debts.size();
-
-        // Recommendation logic
-        if (maxInterestRate > 0.15f) {
-            // High interest: Avalanche is mathematically better
-            return "AVALANCHE";
-        } else if (debtCount > 3 && minBalance < 1000) {
-            // Multiple debts with manageable balances: Snowball for psychology
-            return "SNOWBALL";
-        } else if (debtCount > 1) {
-            // Balanced approach for multiple debts
-            return "HYBRID";
-        } else {
-            // Single debt: Any strategy is same
-            return "AVALANCHE";
+        boolean hasBalance = debts.stream().anyMatch(debt -> debt.currentBalance() > 0f);
+        if (!hasBalance) {
+            return "MINIMUM_ONLY";
         }
+
+        List<StrategyInput> candidates = RECOMMENDATION_CANDIDATES.stream()
+                .map(type -> new StrategyInput(type, null, 0f, 0f))
+                .toList();
+
+        return analyzeStrategyEffectiveness(debts, candidates, new SimulationInput())
+                .getRecommendedStrategy();
     }
 
     /**
-     * Analyze strategy effectiveness by comparing projected outcomes.
+     * Analyze strategy effectiveness by comparing projected payoffs.
+     *
+     * <p>The projection is ordering-aware ({@link DebtProjection}), so different
+     * strategies now produce different numbers, and {@code input.extraPayment} /
+     * {@code input.lumpSumPayment} genuinely affect the result.</p>
      */
     public StrategyAnalysis analyzeStrategyEffectiveness(
             List<DebtSnapshot> debts,
@@ -112,28 +135,38 @@ public class OracleService {
             SimulationInput input
     ) {
         StrategyAnalysis analysis = new StrategyAnalysis();
-        List<StrategyComparison> comparisons = new java.util.ArrayList<>();
+        List<StrategyComparison> comparisons = new ArrayList<>();
+        List<Ranked> ranked = new ArrayList<>();
+
+        float extraPayment = input == null ? 0f : input.getExtraPayment();
+        float lumpSumPayment = input == null ? 0f : input.getLumpSumPayment();
 
         for (StrategyInput strategy : strategiesToCompare) {
             StrategyOutput ordering = strategyService.orderDebts(debts, strategy);
-            float totalInterest = strategyService.calculateTotalInterestForOrdering(ordering.orderedDebts());
+            DebtProjection.PayoffProjection projection = DebtProjection.project(
+                    ordering.orderedDebts(), extraPayment, lumpSumPayment);
 
             comparisons.add(new StrategyComparison(
-                ordering.strategyName(),
-                totalInterest,
-                ordering.orderedDebts().size(),
-                ordering.description()
+                    ordering.strategyName(),
+                    projection.totalInterest(),
+                    ordering.orderedDebts().size(),
+                    ordering.description()
             ));
+            ranked.add(new Ranked(ordering.strategyName(), projection));
         }
 
         analysis.setComparisons(comparisons);
         analysis.setRecommendedStrategy(
-            comparisons.stream()
-                .min((c1, c2) -> Float.compare(c1.projectedInterest(), c2.projectedInterest()))
-                .map(StrategyComparison::strategyName)
-                .orElse("MINIMUM_ONLY")
+                ranked.stream()
+                        .min(RANKING)
+                        .map(Ranked::name)
+                        .orElse("MINIMUM_ONLY")
         );
 
         return analysis;
+    }
+
+    /** A strategy name paired with its projected outcome, for ranking. */
+    private record Ranked(String name, DebtProjection.PayoffProjection projection) {
     }
 }

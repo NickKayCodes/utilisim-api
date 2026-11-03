@@ -9,6 +9,7 @@ import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import static org.junit.jupiter.api.Assertions.*;
+import java.util.NoSuchElementException;
 
 class ApiExceptionHandlerTest {
 
@@ -71,6 +72,16 @@ class ApiExceptionHandlerTest {
         // NoResourceFoundException normalizes the resource path, so accept either
         // the leading-slash form or the stripped form.
         assertTrue(response.getBody().get("message").contains("api/nope"));
+    }
+
+    @Test
+    @DisplayName("a missing domain resource becomes 404")
+    void handlesMissingDomainResource() {
+        var response = handler.handleMissing(new NoSuchElementException("Account not found"));
+
+        assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
+        assertEquals("Not Found", response.getBody().get("error"));
+        assertEquals("Account not found", response.getBody().get("message"));
     }
 
     @Test

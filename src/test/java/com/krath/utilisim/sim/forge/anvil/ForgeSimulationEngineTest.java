@@ -7,7 +7,6 @@ import com.krath.utilisim.sim.forge.hammer.SimulationResult;
 import com.krath.utilisim.sim.forge.materials.SimulationStatus;
 import com.krath.utilisim.sim.oracle.OracleService;
 import com.krath.utilisim.sim.oracle.StrategyService;
-import com.krath.utilisim.sim.ratio.AmortizationEntry;
 import com.krath.utilisim.sim.ratio.calculate.RatioService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -62,6 +61,7 @@ class ForgeSimulationEngineTest {
         assertTrue(result.getTotalInterestPaid() > 0);
         assertTrue(result.getSavingsComparedToBaseline() >= 0);
         assertTrue(result.getSchedule().stream().allMatch(entry -> entry.getDate() != null));
+        assertEquals(0f, result.getRemainingBalance());
     }
 
     @Test
@@ -78,8 +78,64 @@ class ForgeSimulationEngineTest {
     void handlesClearedBalance() {
         SimulationResult result = engine.run(input(), scenario(0f, 5000f));
 
+        assertEquals(SimulationStatus.COMPLETED, result.getStatus());
         assertEquals(0, result.getMonthsToPayoff());
         assertTrue(result.getSchedule().isEmpty());
         assertEquals(0f, result.getTotalPrincipalPaid());
+        assertEquals(0f, result.getRemainingBalance());
+    }
+
+    @Test
+    @DisplayName("a plan that runs out of term is FAILED and reports what is still owed")
+    void failsWhenTermEndsWithABalance() {
+        SimulationInput input = input();
+        input.setPrincipal(1000f);
+        input.setInterestRate(0.2f);
+        input.setTermMonths(12);
+        input.setMinimumPayment(50f);
+
+        SimulationResult result = engine.run(input, scenario(0f, 0f));
+
+        assertEquals(SimulationStatus.FAILED, result.getStatus());
+        assertEquals(12, result.getSchedule().size());
+        assertEquals(0, result.getMonthsToPayoff());
+        assertNull(result.getPayoffDate());
+        assertTrue(result.getRemainingBalance() > 0f);
+        // A failed plan must not claim savings against a baseline it never beat.
+        assertEquals(0f, result.getSavingsComparedToBaseline());
+    }
+
+    @Test
+    @DisplayName("a payment that never reduces principal is FAILED, not COMPLETED")
+    void failsWhenPaymentOnlyCoversInterest() {
+        SimulationInput input = input();
+        input.setPrincipal(1000f);
+        input.setInterestRate(0.2f);
+        input.setTermMonths(12);
+        input.setMinimumPayment(10f);
+
+        SimulationResult result = engine.run(input, scenario(0f, 0f));
+
+        assertEquals(SimulationStatus.FAILED, result.getStatus());
+        assertTrue(result.getSchedule().isEmpty());
+        assertEquals(0, result.getMonthsToPayoff());
+        assertNull(result.getPayoffDate());
+        assertEquals(1000f, result.getRemainingBalance(), 0.01f);
+    }
+
+    @Test
+    @DisplayName("completing exactly on the last month is still COMPLETED")
+    void completesOnTheLastMonth() {
+        SimulationInput input = input();
+        input.setPrincipal(1000f);
+        input.setInterestRate(0f);
+        input.setTermMonths(10);
+        input.setMinimumPayment(100f);
+
+        SimulationResult result = engine.run(input, scenario(0f, 0f));
+
+        assertEquals(SimulationStatus.COMPLETED, result.getStatus());
+        assertEquals(10, result.getMonthsToPayoff());
+        assertEquals(0f, result.getRemainingBalance());
     }
 }

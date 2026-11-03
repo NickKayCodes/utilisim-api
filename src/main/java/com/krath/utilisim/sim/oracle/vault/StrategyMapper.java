@@ -29,14 +29,16 @@ public class StrategyMapper {
      * Convert a Tome entity to a DebtSnapshot DTO.
      */
     public DebtSnapshot toDebtSnapshot(Tome tome) {
+        float apr = tome.getApr() == null ? 0f : tome.getApr().floatValue();
+        float estimatedApr = tome.getEstimatedApr() == null ? 0f : tome.getEstimatedApr().floatValue();
         return new DebtSnapshot(
             tome.getId(),
             tome.getName(),
-            tome.getCurrentBalance(),
-            tome.getApr(),
-            tome.getEstimatedApr(),
-            tome.getMinimumDebtPayment(),
-            tome.getApr() > 0 ? tome.getApr() : tome.getEstimatedApr()
+            tome.getCurrentBalance().floatValue(),
+            apr,
+            estimatedApr,
+            tome.getMinimumDebtPayment().floatValue(),
+            apr > 0f ? apr : estimatedApr
         );
     }
 
